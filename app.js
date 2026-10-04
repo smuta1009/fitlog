@@ -450,16 +450,21 @@
   function renderEditor() {
     const e = ui.editor;
     // столбцы слева направо: позапрошлая, прошлая, текущая — как даты в таблице
-    const past = [...e.prev].reverse();
+    // прошлых столбцов всегда два: если данных нет, показываем пустые — так видно, где они будут
+    const past = [...e.prev, [null, []], [null, []]].slice(0, 2).reverse();
     const rowCount = Math.max(e.rows.length, ...past.map(([, sets]) => sets.length));
     const isToday = ui.day === todayIso();
-    const labels = past.length === 2 ? ["позапрошлая", "прошлая"] : ["прошлая"];
+    const current = isToday ? "Сегодня" : shortDate(ui.day);
 
     let cells = `<div class="c fz h">#</div>`;
     past.forEach(([d], j) => {
-      cells += `<div class="c h past-h ${j === 0 ? "snap" : ""}"><b>${shortDate(d)}</b><small>${labels[j]}</small></div>`;
+      const jump = j === 1 ? `<button class="jump" data-act="grid-jump" data-to="cur">${current} ›</button>` : "";
+      cells += `<div class="c h past-h ${j === 0 ? "snap" : ""}">
+        <div><b>${d ? shortDate(d) : "—"}</b><small>${["позапрошлая", "прошлая"][j]}</small></div>${jump}</div>`;
     });
-    cells += `<div class="c h cur-h snap"><b>${isToday ? "Сегодня" : shortDate(ui.day)}</b><small>текущая</small></div>`;
+    cells += `<div class="c h cur-h snap-end">
+      <div><b>${current}</b><small>текущая</small></div>
+      <button class="jump" data-act="grid-jump" data-to="past">‹ Прошлые</button></div>`;
 
     for (let i = 0; i < rowCount; i++) {
       cells += `<div class="c fz n">${i + 1}</div>`;
@@ -489,15 +494,15 @@
       }
     }
 
-    const hint = past.length
-      ? "Потяни таблицу вправо — там прошлые тренировки"
-      : "Раньше это упражнение не выполнялось";
+    const hint = e.prev.length
+      ? "Нажми «Прошлые» или проведи по таблице вправо, чтобы сравнить с прошлыми тренировками"
+      : "Это упражнение записывается впервые — прошлых результатов пока нет";
     $("#editor").innerHTML = `
       <p class="prev-info">${esc(groupOf(e.ex))} · ${hint}</p>
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ""}
       <div class="card grid-card">
         <div class="grid-scroll" id="grid-scroll">
-          <div class="grid" style="--past:${past.length}">${cells}</div>
+          <div class="grid">${cells}</div>
         </div>
       </div>
       <label class="card toggle-row">
@@ -677,7 +682,7 @@
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.1</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.2</p>`;
   }
 
   async function exportData() {
@@ -741,6 +746,10 @@
       const last = rows[rows.length - 1];
       rows.push(last ? { ...last } : { k: "work", w: "", r: "" });
       renderEditor();
+    },
+    "grid-jump": (el) => {
+      const sc = $("#grid-scroll");
+      sc.scrollTo({ left: el.dataset.to === "past" ? 0 : sc.scrollWidth, behavior: "smooth" });
     },
     "del-row": (el) => { ui.editor.rows.splice(Number(el.dataset.i), 1); renderEditor(); },
     save: () => saveEditor(),
