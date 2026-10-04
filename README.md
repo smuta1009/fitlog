@@ -33,7 +33,9 @@ python -m PyInstaller --noconfirm --onefile --windowed --name Fitlog --icon asse
 - Перенос данных с компьютера: `python -m fitlog export fitlog.json`, затем отправить файл на телефон
   и в приложении открыть «Ещё» → «Загрузить из файла».
 - Обратно: «Ещё» → «Сохранить копию в файл», затем `python -m fitlog import fitlog.json`.
-- После изменения файлов в `web/` увеличь номер версии `CACHE` в `web/sw.js`, чтобы телефоны получили обновление.
+- Адрес: https://smuta1009.github.io/fitlog/ (GitHub Pages, ветка `gh-pages`).
+- Выкладка обновления: увеличь номер `CACHE` в `web/sw.js`, закоммить и выполни
+  `git push && git subtree push --prefix web origin gh-pages`.
 - Проверить локально: `python -m http.server -d web 8000` и открыть http://localhost:8000.
 
 ## Консольная версия
