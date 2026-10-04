@@ -11,6 +11,7 @@
   --danger: #DC2626;
   --trend: #0D9488;
   --up: #16A34A;
+  --divider: #DCDCE3;
   --warm-fg: #B45309;
   --warm-bg: #FEF3C7;
   --fail-fg: #DC2626;
@@ -34,6 +35,7 @@
     --danger: #F87171;
     --trend: #2DD4BF;
     --up: #4ADE80;
+    --divider: rgba(255, 255, 255, 0.85);
     --warm-fg: #FBBF24;
     --warm-bg: #352A10;
     --fail-fg: #F87171;
@@ -56,6 +58,7 @@
   --danger: #F87171;
   --trend: #2DD4BF;
   --up: #4ADE80;
+  --divider: rgba(255, 255, 255, 0.85);
   --warm-fg: #FBBF24;
   --warm-bg: #352A10;
   --fail-fg: #F87171;
@@ -95,6 +98,7 @@ input, textarea, select {
 }
 
 main {
+  min-height: calc(100vh + 1px);
   max-width: 640px;
   margin: 0 auto;
   padding: calc(env(safe-area-inset-top) + 18px) 16px calc(env(safe-area-inset-bottom) + 80px);
@@ -430,8 +434,6 @@ h2 { font-size: 17px; margin: 0; }
 .c.past .wt { font-weight: 600; }
 .c.past .rp { color: var(--muted); }
 .c.past.none { color: var(--muted); align-items: center; }
-.c.past.k-line-warmup .wt { color: var(--warm-fg); }
-.c.past.k-line-failure .wt { color: var(--fail-fg); }
 .c.cur { gap: 6px; padding: 6px 4px 6px 8px; }
 
 .kind {
@@ -609,7 +611,7 @@ h2 { font-size: 17px; margin: 0; }
 }
 .wk-name { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
 .wk-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
-.ex-block { border-top: 0.5px solid var(--line); cursor: pointer; }
+.ex-block { border-top: 2px solid var(--divider); cursor: pointer; }
 .ex-block:active .ex-head { background: var(--hover); }
 .ex-head {
   display: flex;
@@ -703,3 +705,12 @@ h2 { font-size: 17px; margin: 0; }
 .bw-form input[type="date"] { -webkit-appearance: none; appearance: none; display: flex; align-items: center; }
 .bw-form .btn { grid-column: 1 / -1; min-height: 46px; }
 .bw-delta { font-size: 14px; font-weight: 600; color: var(--muted); margin-right: 4px; }
+
+/* ---------- метки типа в прошлых подходах, группы мышц ---------- */
+
+.l2 { display: inline-flex; align-items: center; gap: 6px; }
+.tag.sm { margin-left: 0; font-size: 10px; padding: 2px 5px; border-radius: 5px; }
+.pills.wrap .pill.on { background: var(--text); color: var(--bg); }
+.groups-card { margin-top: 10px; }
+.groups-card b { display: block; font-size: 15px; }
+.groups-card small { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
