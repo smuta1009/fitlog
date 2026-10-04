@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Fitlog</title>
+  <meta name="description" content="Дневник тренировок">
+  <meta name="theme-color" content="#F4F4F6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0F0F11" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Fitlog">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="view"></main>
+
+  <nav class="tabbar" aria-label="Разделы">
+    <button data-act="tab" data-tab="diary">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
+      <span>Дневник</span>
+    </button>
+    <button data-act="tab" data-tab="history">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6.5h12M8 12h12M8 17.5h12"/><circle cx="4" cy="6.5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="17.5" r="1"/></svg>
+      <span>История</span>
+    </button>
+    <button data-act="tab" data-tab="progress">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 19.5h17M5 15l4.5-4.5 3.5 3L19.5 7"/><path d="M15 7h4.5v4.5"/></svg>
+      <span>Прогресс</span>
+    </button>
+    <button data-act="tab" data-tab="more">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
+      <span>Ещё</span>
+    </button>
+  </nav>
+
+  <section id="sheet" class="sheet" aria-modal="true" role="dialog"></section>
+  <div id="toast" class="toast" role="status"></div>
+  <input id="import-file" type="file" accept=".json,application/json" hidden>
+
+  <script src="app.js"></script>
+  <script>
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+    }
+  </script>
+</body>
+</html>
