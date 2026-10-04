@@ -326,7 +326,7 @@
           return set;
         });
         const exercises = Array.isArray(w.exercises) ? w.exercises.map(norm).filter(Boolean) : [];
-        if (sets.length || exercises.length) {
+        if (sets.length || exercises.length || w.note) {   // день только с заметкой (кардио) тоже сохраняем
           parsed[w.day] = { name: String(w.name || ""), note: String(w.note || ""),
                             template: w.template || null, exercises, sets };
         }
@@ -1135,7 +1135,7 @@
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.6</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.7</p>`;
   }
 
   async function exportData() {
