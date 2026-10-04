@@ -680,9 +680,13 @@
         <button class="row-btn" data-act="export"><span>Сохранить копию в файл</span><span>${n} ${plural(n, "тренировка", "тренировки", "тренировок")}</span></button>
         <button class="row-btn" data-act="import"><span>Загрузить из файла</span><span>.json</span></button>
       </div>
+      <div class="section-title">Приложение</div>
+      <div class="list-card">
+        <button class="row-btn" data-act="force-update"><span>Обновить приложение</span><span>тренировки сохранятся</span></button>
+      </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.2</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.3</p>`;
   }
 
   async function exportData() {
@@ -772,6 +776,17 @@
       render();
     },
     export: () => exportData(),
+    "force-update": async () => {
+      toast("Обновляю…");
+      try {
+        // данные лежат в localStorage — их это не затрагивает; удаляем только кэш файлов приложения
+        const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
+        await Promise.all(regs.map((r) => r.unregister()));
+        const keys = (await window.caches?.keys?.()) || [];
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      } catch (e) { /* всё равно перезагружаемся */ }
+      location.replace(location.pathname + "?v=" + Date.now());
+    },
     import: () => $("#import-file").click(),
   };
 
