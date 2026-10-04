@@ -34,7 +34,13 @@
     for (const name of names) INDEX.set(norm(name), { name, group });
   }
   const displayName = (ex) => INDEX.get(ex)?.name ?? ex.charAt(0).toUpperCase() + ex.slice(1);
-  const groupOf = (ex) => INDEX.get(ex)?.group ?? Store.data.groups?.[ex] ?? CUSTOM;
+  /** Группы мышц упражнения: заданные пользователем, иначе из справочника (у своих — пусто). */
+  function groupsOf(ex) {
+    const own = Store.data.groups?.[ex];
+    if (own !== undefined) return Array.isArray(own) ? own : [own];
+    return INDEX.has(ex) ? [INDEX.get(ex).group] : [];
+  }
+  const groupOf = (ex) => groupsOf(ex).join(" · ") || "Без группы";
   const GROUPS = Object.keys(CATALOG);
 
   // Упражнения с двумя снарядами: вес пишется для одного, в объёме учитываются оба.
@@ -212,10 +218,12 @@
       this.save();
     },
 
-    setGroup(ex, group) {
+    setGroups(ex, groups) {
       this.data.groups = this.data.groups || {};
-      if (group && group !== CUSTOM) this.data.groups[ex] = group;
-      else delete this.data.groups[ex];
+      const ordered = GROUPS.filter((g) => groups.includes(g));
+      const byDefault = INDEX.has(ex) ? [INDEX.get(ex).group] : [];
+      if (ordered.join() === byDefault.join()) delete this.data.groups[ex];
+      else this.data.groups[ex] = ordered;
       this.save();
     },
 
@@ -242,8 +250,6 @@
       this.save();
     },
 
-    /** Объём подхода в кг с учётом обоих снарядов. */
-    volume(s) { return s.weight * s.reps * (this.isPaired(s.exercise) ? 2 : 1); },
 
     days() { return Object.keys(this.data.workouts).sort().reverse(); },
 
@@ -268,7 +274,7 @@
     /** Статистика без разминочных подходов. */
     stats(ex) {
       const history = [];
-      let sets = 0, volume = 0, best = 0, bestOrm = 0;
+      let sets = 0, best = 0, bestOrm = 0;
       for (const d of this.days().reverse()) {
         const work = this.sets(d, ex).filter((s) => s.kind !== "warmup");
         if (!work.length) continue;
@@ -276,12 +282,11 @@
         const dayOrm = Math.max(...work.map(orm));
         history.push([d, dayBest, dayOrm]);
         sets += work.length;
-        volume += work.reduce((a, s) => a + this.volume(s), 0);
         best = Math.max(best, dayBest);
         bestOrm = Math.max(bestOrm, dayOrm);
       }
       if (!history.length) return null;
-      return { sessions: history.length, sets, volume, best, orm: bestOrm, history };
+      return { sessions: history.length, sets, best, orm: bestOrm, history };
     },
 
     exportData() {
@@ -333,7 +338,10 @@
       }
       if (obj.groups && typeof obj.groups === "object") {
         this.data.groups = { ...(this.data.groups || {}) };
-        for (const [ex, g] of Object.entries(obj.groups)) if (GROUPS.includes(g)) this.data.groups[norm(ex)] = g;
+        for (const [ex, g] of Object.entries(obj.groups)) {
+          const list = (Array.isArray(g) ? g : [g]).filter((x) => GROUPS.includes(x));
+          this.data.groups[norm(ex)] = list;
+        }
       }
       if (obj.body && typeof obj.body === "object") {
         this.data.body = { ...(this.data.body || {}) };
@@ -397,7 +405,7 @@
   function closeSheet() {
     sheet.classList.remove("open");
     document.body.classList.remove("locked");
-    ui.picker = ui.editor = ui.list = null;
+    ui.picker = ui.editor = ui.list = ui.exset = null;
   }
 
   // ---------- таблица подходов (как в Google Таблицах) ----------
@@ -405,8 +413,12 @@
   // Слева закреплён номер подхода, дальше столбцы: позапрошлая, прошлая, текущая тренировка.
   // По умолчанию видна текущая; прошлые открываются прокруткой или кнопкой «‹ Прошлые».
 
+  /** Два прошлых столбца: [дата, подходы, подходы тренировки перед ней — для сравнения цветом].
+   *  Первый — позапрошлая, второй — прошлая. */
   function pastColumns(ex) {
-    return [...Store.previous(ex, ui.day), [null, []], [null, []]].slice(0, 2).reverse();
+    const prev = Store.previous(ex, ui.day, 3); // от новых к старым
+    const at = (k) => prev[k] || [null, []];
+    return [[...at(1), at(2)[1]], [...at(0), at(1)[1]]];
   }
 
   function gridHeadHTML(past) {
@@ -423,13 +435,27 @@
     return cells;
   }
 
-  function pastCellHTML(s, paired) {
-    return s
-      ? `<div class="c past k-line-${s.kind}"><span class="wt">${weightHTML(s, paired)}</span><span class="rp">× ${s.reps}</span></div>`
-      : `<div class="c past none">—</div>`;
+  const kindTag = (s) => (s.kind !== "work" ? `<span class="tag k-${s.kind}">${KIND_LABELS[s.kind]}</span>` : "");
+  const SHORT_KIND = { warmup: "Разм.", failure: "Отказ" };
+
+  function pastCellHTML(s, paired, base) {
+    if (!s) return `<div class="c past none">—</div>`;
+    const tag = s.kind !== "work" ? `<span class="tag sm k-${s.kind}">${SHORT_KIND[s.kind]}</span>` : "";
+    return `<div class="c past"><span class="wt cmp-${compare(s, base, "w")}">${weightHTML(s, paired)}</span>`
+      + `<span class="l2"><span class="rp cmp-${compare(s, base, "r")}">× ${s.reps}</span>${tag}</span></div>`;
   }
 
-  const kindTag = (s) => (s.kind !== "work" ? `<span class="tag k-${s.kind}">${KIND_LABELS[s.kind]}</span>` : "");
+  /** Кнопки групп мышц: можно выбрать несколько (например, у становой тяги — спина и ноги). */
+  function groupsCardHTML(ex) {
+    const own = groupsOf(ex);
+    return `
+      <div class="card groups-card">
+        <b>Группы мышц</b>
+        <small>Можно выбрать несколько — например, у становой тяги спина и ноги</small>
+        <div class="pills wrap">${GROUPS.map((g) =>
+          `<button class="pill ${own.includes(g) ? "on" : ""}" data-act="ex-group" data-ex="${esc(ex)}" data-group="${esc(g)}">${esc(g)}</button>`).join("")}</div>
+      </div>`;
+  }
 
   /** Упражнение в карточке тренировки: таблица только для просмотра, нажатие открывает редактор. */
   function exerciseBlockHTML(ex, sets) {
@@ -439,7 +465,7 @@
     let cells = gridHeadHTML(past);
     for (let i = 0; i < rows; i++) {
       cells += `<div class="c fz n">${i + 1}</div>`;
-      for (const [, ps] of past) cells += pastCellHTML(ps[i], paired);
+      for (const [, ps, base] of past) cells += pastCellHTML(ps[i], paired, base[i]);
       const s = sets[i];
       const prev = past[1][1][i];
       if (s) {
@@ -452,7 +478,7 @@
     return `
       <section class="ex-block" data-act="edit" data-ex="${esc(ex)}">
         <div class="ex-head">
-          <div><div class="ex-name">${esc(displayName(ex))}</div><div class="ex-group">${esc(groupOf(ex))}</div></div>
+          <div class="ex-name">${esc(displayName(ex))}</div>
           <span class="chev">${ICONS.right}</span>
         </div>
         <div class="grid-scroll ro"><div class="grid">${cells}</div></div>
@@ -530,16 +556,9 @@
 
   function diaryView() {
     const w = Store.get(ui.day);
-    const isToday = ui.day === todayIso();
-    const wd = isToday ? `Сегодня, ${weekday(ui.day)}` : cap(weekday(ui.day));
-    let subtitle = `${wd} · тренировки нет`;
     let body;
     if (w) {
       const exercises = Store.exercisesOf(w);
-      const work = w.sets.filter((s) => s.kind !== "warmup").length;
-      const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
-      subtitle = `${wd} · ${exercises.length} ${plural(exercises.length, "упражнение", "упражнения", "упражнений")} · `
-        + `${work} ${plural(work, "рабочий подход", "рабочих подхода", "рабочих подходов")} · ${fmt(volume)} кг`;
       body = `
         <section class="card workout">
           <div class="wk-head">
@@ -561,7 +580,6 @@
     return `
       <header class="page-head">
         <h1>${longDate(ui.day)}${parse(ui.day).getFullYear() !== new Date().getFullYear() ? " " + parse(ui.day).getFullYear() : ""}</h1>
-        <p class="muted">${subtitle}</p>
       </header>
       ${calendarHTML()}
       <div class="stack" style="margin-top:12px">${body}</div>`;
@@ -610,17 +628,17 @@
   function renderPickerList() {
     const p = ui.picker;
     const custom = customExercises();
-    const groups = [ALL, ...GROUPS, ...(custom.some((e) => groupOf(e) === CUSTOM) ? [CUSTOM] : [])];
+    const extra = [...new Set([...custom, ...p.selected.filter((e) => !INDEX.has(e))])];
+    const everything = [...INDEX.keys(), ...extra];
+    const ungrouped = everything.filter((e) => !groupsOf(e).length);
+    const groups = [ALL, ...GROUPS, ...(ungrouped.length ? [CUSTOM] : [])];
     if (!groups.includes(p.group)) p.group = ALL;
     $("#pick-groups").innerHTML = groups.map((g) =>
       `<button class="pill ${g === p.group ? "on" : ""}" data-act="pick-group" data-group="${esc(g)}">${esc(g)}</button>`).join("");
 
     const q = norm(p.q);
-    const sections = Object.entries(CATALOG).map(([g, names]) => [g, names.map(norm)]);
-    // свои упражнения показываем в их группе, без группы — в «Мои»
-    const extra = [...new Set([...custom, ...p.selected.filter((e) => !INDEX.has(e))])];
-    for (const section of sections) section[1].push(...extra.filter((e) => groupOf(e) === section[0]));
-    const ungrouped = extra.filter((e) => groupOf(e) === CUSTOM);
+    // упражнение показывается в каждой своей группе; без групп — в «Мои»
+    const sections = GROUPS.map((g) => [g, everything.filter((e) => groupsOf(e).includes(g))]);
     if (ungrouped.length) sections.push([CUSTOM, ungrouped]);
     let html = "";
     const known = new Set([...INDEX.keys(), ...extra]);
@@ -820,7 +838,7 @@
     let cells = gridHeadHTML(past);
     for (let i = 0; i < rowCount; i++) {
       cells += `<div class="c fz n">${i + 1}</div>`;
-      for (const [, sets] of past) cells += pastCellHTML(sets[i], e.paired);
+      for (const [, sets, base] of past) cells += pastCellHTML(sets[i], e.paired, base[i]);
       const row = e.rows[i];
       if (row) {
         const cmp = (f) => compare(rowSet(row), past[1][1][i], f);
@@ -845,20 +863,12 @@
       ? "Нажми «Прошлые» или проведи по таблице вправо, чтобы сравнить с прошлыми тренировками"
       : "Это упражнение записывается впервые — прошлых результатов пока нет";
     $("#editor").innerHTML = `
-      <p class="prev-info">${esc(groupOf(e.ex))} · ${hint}</p>
+      <p class="prev-info">${esc(groupOf(e.ex))} · <span>${hint}</span></p>
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ""}
       <div class="card grid-card">
         <div class="grid-scroll" id="grid-scroll"><div class="grid">${cells}</div></div>
       </div>
-      ${INDEX.has(e.ex) ? "" : `
-      <div class="card toggle-row">
-        <span><b>Группа мышц</b><small>Своё упражнение — можно отнести к любой группе</small></span>
-        <div class="select-wrap small-select">
-          <select id="ex-group">${[...GROUPS, CUSTOM].map((g) =>
-            `<option value="${esc(g)}" ${groupOf(e.ex) === g ? "selected" : ""}>${g === CUSTOM ? "Без группы" : esc(g)}</option>`).join("")}</select>
-          ${ICONS.chevron}
-        </div>
-      </div>`}
+      ${groupsCardHTML(e.ex)}
       <label class="card toggle-row">
         <span><b>Два снаряда</b><small>Вес одной гантели или стороны тренажёра, рядом пишется ×2</small></span>
         <input type="checkbox" id="paired" ${e.paired ? "checked" : ""}><i class="switch"></i>
@@ -918,12 +928,11 @@
       const w = Store.get(day);
       const names = Store.exercisesOf(w).map(displayName).join(", ");
       const work = w.sets.filter((s) => s.kind !== "warmup").length;
-      const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
       const d = parse(day);
       return `
         <button class="card hist-card" data-act="open-day" data-day="${day}">
           <div class="hist-date">${w.name ? `${esc(w.name)} · ` : ""}${longDate(day)} ${d.getFullYear()}, ${weekday(day)}</div>
-          <div class="hist-meta">${esc(names)}<br>${work} раб. ${plural(work, "подход", "подхода", "подходов")} · ${fmt(volume)} кг</div>
+          <div class="hist-meta">${esc(names)}<br>${work} ${plural(work, "рабочий подход", "рабочих подхода", "рабочих подходов")}</div>
           ${w.note ? `<div class="hist-note">${esc(w.note)}</div>` : ""}
         </button>`;
     }).join("") : '<div class="card empty"><b>Пока пусто</b><span class="muted">Запиши первую тренировку в «Дневнике»</span></div>';
@@ -958,7 +967,7 @@
           <div class="card tile"><div class="value">${fmt(st.best)}</div><div class="label">рекорд веса, кг</div></div>
           <div class="card tile"><div class="value">${st.sessions}</div><div class="label">${plural(st.sessions, "тренировка", "тренировки", "тренировок")}</div></div>
           <div class="card tile"><div class="value">${st.sets}</div><div class="label">рабочих подходов</div></div>
-          <div class="card tile"><div class="value">${fmt(Math.round(st.volume))}</div><div class="label">общий объём, кг</div></div>
+          <div class="card tile"><div class="value">${shortDate(st.history[st.history.length - 1][0])}</div><div class="label">последняя тренировка</div></div>
         </div>
         <div class="card chart">
           <div class="legend"><span><i style="background:var(--accent)"></i>Расчётный 1ПМ</span>
@@ -1116,13 +1125,17 @@
         <button class="row-btn" data-act="export"><span>Сохранить копию в файл</span><span>${n} ${plural(n, "тренировка", "тренировки", "тренировок")}</span></button>
         <button class="row-btn" data-act="import"><span>Загрузить из файла</span><span>.json</span></button>
       </div>
+      <div class="section-title">Упражнения</div>
+      <div class="list-card">
+        <button class="row-btn" data-act="base"><span>База упражнений</span><span>группы мышц, ×2</span></button>
+      </div>
       <div class="section-title">Приложение</div>
       <div class="list-card">
         <button class="row-btn" data-act="force-update"><span>Обновить приложение</span><span>тренировки сохранятся</span></button>
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.5</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.6</p>`;
   }
 
   async function exportData() {
@@ -1154,6 +1167,55 @@
     } catch (e) {
       toast(`Не удалось загрузить: ${e.message}`);
     }
+  }
+
+  // ---------- база упражнений ----------
+
+  function openBase() {
+    ui.base = ui.base || { q: "" };
+    ui.exset = null;
+    openSheet(`
+      <div class="sheet-head">
+        <button class="link muted" data-act="close">Закрыть</button>
+        <h2>База упражнений</h2>
+        <span></span>
+      </div>
+      <div class="sheet-body"><div class="sheet-inner">
+        <input id="base-q" class="field" type="search" placeholder="Поиск" autocomplete="off" value="${esc(ui.base.q)}">
+        <p class="muted small" style="margin:10px 4px">Нажми на упражнение, чтобы поменять группы мышц или режим «два снаряда»</p>
+        <div id="base-list"></div>
+      </div></div>`);
+    renderBaseList();
+  }
+
+  function renderBaseList() {
+    const q = norm(ui.base.q);
+    const all = [...new Set([...INDEX.keys(), ...customExercises()])]
+      .filter((e) => e.includes(q))
+      .sort((a, b) => displayName(a).localeCompare(displayName(b), "ru"));
+    $("#base-list").innerHTML = all.length
+      ? `<div class="pick-list">${all.map((e) => `
+          <button class="pick-item tpl" data-act="base-open" data-ex="${esc(e)}">
+            <b>${esc(displayName(e))}</b><small>${esc(groupOf(e))}${Store.isPaired(e) ? " · ×2" : ""}</small>
+          </button>`).join("")}</div>`
+      : '<div class="empty muted">Ничего не найдено</div>';
+  }
+
+  function openExerciseSettings(ex) {
+    ui.exset = ex;
+    openSheet(`
+      <div class="sheet-head">
+        <button class="link muted" data-act="base-back">Назад</button>
+        <h2>${esc(displayName(ex))}</h2>
+        <span></span>
+      </div>
+      <div class="sheet-body"><div class="sheet-inner" id="exset">
+        ${groupsCardHTML(ex)}
+        <label class="card toggle-row">
+          <span><b>Два снаряда</b><small>Вес одной гантели или стороны тренажёра, рядом пишется ×2</small></span>
+          <input type="checkbox" id="exset-paired" ${Store.isPaired(ex) ? "checked" : ""}><i class="switch"></i>
+        </label>
+      </div></div>`);
   }
 
   // ---------- события ----------
@@ -1191,12 +1253,14 @@
       const ex = el.dataset.ex;
       const i = sel.indexOf(ex);
       if (i >= 0) sel.splice(i, 1); else sel.push(ex);
-      el.classList.toggle("on", i < 0);
+      // упражнение может стоять в нескольких группах — отмечаем все его строки
+      document.querySelectorAll(`[data-act="pick-toggle"][data-ex="${CSS.escape(ex)}"]`)
+        .forEach((item) => item.classList.toggle("on", i < 0));
       updatePickDone();
     },
     "pick-custom": (el) => {
       const ex = norm(ui.picker.q);
-      if (ex && !INDEX.has(ex)) Store.setGroup(ex, el.dataset.group === "Без группы" ? CUSTOM : el.dataset.group);
+      if (ex && !INDEX.has(ex)) Store.setGroups(ex, el.dataset.group === "Без группы" ? [] : [el.dataset.group]);
       if (ex && !ui.picker.selected.includes(ex)) ui.picker.selected.push(ex);
       ui.picker.q = "";
       $("#pick-q").value = "";
@@ -1278,6 +1342,17 @@
       render();
     },
     "bw-range": (el) => { ui.bodyRange = Number(el.dataset.days); render(); },
+    "ex-group": (el) => {
+      const ex = el.dataset.ex;
+      const groups = groupsOf(ex);
+      const g = el.dataset.group;
+      Store.setGroups(ex, groups.includes(g) ? groups.filter((x) => x !== g) : [...groups, g]);
+      el.classList.toggle("on");
+      if (ui.editor) $("#editor .prev-info").firstChild.textContent = `${groupOf(ex)} · `;
+    },
+    base: () => openBase(),
+    "base-open": (el) => openExerciseSettings(el.dataset.ex),
+    "base-back": () => openBase(),
     "open-day": (el) => {
       ui.day = el.dataset.day;
       ui.cursor = ui.day;
@@ -1317,6 +1392,9 @@
       renderPickerList();
     } else if (t.id === "note") {
       Store.setNote(ui.day, t.value.trim());
+    } else if (t.id === "base-q" && ui.base) {
+      ui.base.q = t.value;
+      renderBaseList();
     } else if (t.id === "list-name" && ui.list) {
       ui.list.name = t.value;
     } else if ((t.dataset.f === "w" || t.dataset.f === "r") && ui.editor) {
@@ -1335,11 +1413,8 @@
     } else if (t.dataset.f === "k" && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)].k = t.value;
       t.className = `kind k-${t.value}`;
-    } else if (t.id === "ex-group" && ui.editor) {
-      Store.setGroup(ui.editor.ex, t.value);
-      const scroll = $("#grid-scroll").scrollLeft;
-      renderEditor();
-      $("#grid-scroll").scrollLeft = scroll;
+    } else if (t.id === "exset-paired" && ui.exset) {
+      Store.setPaired(ui.exset, t.checked);
     } else if (t.id === "bw-day") {
       const kg = (Store.data.body || {})[t.value];
       $("#bw-kg").value = kg ? fmt(kg) : "";
@@ -1361,7 +1436,7 @@
     if (event.key !== "Enter") return;
     const t = event.target;
     if (t.id === "bw-kg") return actions["bw-save"]();
-    if (t.id === "pick-q" || t.id === "wk-name" || t.id === "list-name" || t.dataset.f) t.blur();
+    if (t.id === "pick-q" || t.id === "wk-name" || t.id === "list-name" || t.id === "base-q" || t.dataset.f) t.blur();
   });
 
   let resizeTimer;
