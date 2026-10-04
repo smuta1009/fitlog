@@ -349,14 +349,13 @@ h2 { font-size: 17px; margin: 0; }
 }
 .grid-scroll::-webkit-scrollbar { display: none; }
 .grid {
-  /* текущая тренировка занимает всю видимую ширину, прошлые — по половине */
-  --cw: calc(100vw - 32px - var(--fz));
-  --pw: calc(var(--cw) / 2);
+  /* текущая тренировка занимает всю видимую ширину, два прошлых столбца — по половине */
+  --vw: calc(100vw - 32px - var(--fz));
   display: grid;
-  grid-template-columns: var(--fz) repeat(var(--past), var(--pw)) var(--cw);
+  grid-template-columns: var(--fz) repeat(2, calc(var(--vw) / 2)) var(--vw);
 }
 @supports (width: 1cqw) {
-  .grid { --cw: calc(100cqw - var(--fz)); }
+  .grid { --vw: calc(100cqw - var(--fz)); }
 }
 .c {
   min-height: 58px;
@@ -378,6 +377,18 @@ h2 { font-size: 17px; margin: 0; }
 .c.h b { font-size: 14px; }
 .c.h small { font-size: 11px; color: var(--muted); }
 .c.snap { scroll-snap-align: start; }
+.c.snap-end { scroll-snap-align: end; }
+.c.h.past-h, .c.h.cur-h { flex-direction: row; align-items: center; justify-content: space-between; gap: 6px; }
+.c.h > div { display: flex; flex-direction: column; min-width: 0; }
+.jump {
+  flex: none;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent);
+}
 .c.fz {
   position: sticky;
   left: 0;
