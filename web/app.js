@@ -84,20 +84,28 @@
     left: '<svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg>',
     right: '<svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
     close: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    up: '<svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>',
+    down: '<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
   };
 
   // ---------- хранилище ----------
+  //
+  // workouts[day] = { name, note, template, exercises: [порядок упражнений], sets: [подходы] }
+  // В тренировке могут быть упражнения без подходов — запланированные (например, из шаблона).
+  // templates = [{ id, name, exercises }]
 
   const STORE_KEY = "fitlog.data.v1";
+  const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
   const Store = {
-    data: { workouts: {} },
+    data: { workouts: {}, templates: [] },
 
     load() {
       try {
         const d = JSON.parse(localStorage.getItem(STORE_KEY));
         if (d && typeof d.workouts === "object") this.data = d;
       } catch (e) { /* пустое хранилище */ }
+      this.data.templates = this.data.templates || [];
     },
 
     save() {
@@ -115,19 +123,58 @@
       return w ? w.sets.filter((s) => s.exercise === ex) : [];
     },
 
-    /** Заменяет подходы упражнения за день, оставляя упражнение на прежнем месте. */
-    saveExercise(day, ex, sets) {
-      const w = this.data.workouts[day] || { note: "", sets: [] };
-      const out = [];
-      let placed = false;
-      for (const s of w.sets) {
-        if (s.exercise !== ex) out.push(s);
-        else if (!placed) { out.push(...sets); placed = true; }
+    /** Упражнения тренировки по порядку, включая запланированные без подходов. */
+    exercisesOf(w) {
+      const list = [...(w.exercises || [])];
+      for (const s of w.sets) if (!list.includes(s.exercise)) list.push(s.exercise);
+      return list;
+    },
+
+    ensure(day) {
+      if (!this.data.workouts[day]) {
+        this.data.workouts[day] = { name: "", note: "", template: null, exercises: [], sets: [] };
       }
-      if (!placed) out.push(...sets);
-      w.sets = out;
-      if (out.length) this.data.workouts[day] = w;
-      else delete this.data.workouts[day];
+      return this.data.workouts[day];
+    },
+
+    cleanup(day) {
+      const w = this.get(day);
+      if (w && !w.sets.length && !this.exercisesOf(w).length) delete this.data.workouts[day];
+    },
+
+    /** Заменяет подходы упражнения за день; упражнение остаётся в тренировке на своём месте. */
+    saveExercise(day, ex, sets) {
+      const w = this.ensure(day);
+      w.exercises = this.exercisesOf(w);
+      if (!w.exercises.includes(ex)) w.exercises.push(ex);
+      w.sets = w.sets.filter((s) => s.exercise !== ex).concat(sets);
+      this.save();
+    },
+
+    removeExercise(day, ex) {
+      const w = this.get(day);
+      if (!w) return;
+      w.exercises = this.exercisesOf(w).filter((e) => e !== ex);
+      w.sets = w.sets.filter((s) => s.exercise !== ex);
+      this.cleanup(day);
+      this.save();
+    },
+
+    startWorkout(day, name, exercises, template = null) {
+      const w = this.ensure(day);
+      if (name) w.name = name;
+      if (template) w.template = template;
+      w.exercises = [...new Set([...this.exercisesOf(w), ...exercises])];
+      this.save();
+    },
+
+    updateWorkout(day, name, exercises, template) {
+      const w = this.ensure(day);
+      w.name = name;
+      w.template = template;
+      w.exercises = [...exercises];
+      w.sets = w.sets.filter((s) => exercises.includes(s.exercise));
+      this.cleanup(day);
       this.save();
     },
 
@@ -137,6 +184,23 @@
     },
 
     deleteDay(day) { delete this.data.workouts[day]; this.save(); },
+
+    templates() { return this.data.templates; },
+    template(id) { return this.data.templates.find((t) => t.id === id) || null; },
+
+    saveTemplate({ id, name, exercises }) {
+      const existing = id && this.template(id);
+      if (existing) Object.assign(existing, { name, exercises: [...exercises] });
+      else this.data.templates.push({ id: id = newId(), name, exercises: [...exercises] });
+      this.save();
+      return id;
+    },
+
+    deleteTemplate(id) {
+      this.data.templates = this.data.templates.filter((t) => t.id !== id);
+      for (const w of Object.values(this.data.workouts)) if (w.template === id) w.template = null;
+      this.save();
+    },
 
     isPaired(ex) { return this.data.paired?.[ex] ?? PAIRED_DEFAULT.has(ex); },
 
@@ -165,7 +229,8 @@
 
     exercises() {
       const all = new Set();
-      for (const w of Object.values(this.data.workouts)) for (const s of w.sets) all.add(s.exercise);
+      for (const w of Object.values(this.data.workouts)) for (const ex of this.exercisesOf(w)) all.add(ex);
+      for (const t of this.data.templates) for (const ex of t.exercises) all.add(ex);
       return [...all].sort((a, b) => displayName(a).localeCompare(displayName(b), "ru"));
     },
 
@@ -191,14 +256,18 @@
     exportData() {
       return {
         app: "fitlog",
-        version: 1,
+        version: 2,
         exported: new Date().toISOString(),
         paired: { ...(this.data.paired || {}) },
+        templates: this.data.templates,
         workouts: this.days().reverse().map((day) => {
           const w = this.data.workouts[day];
           return {
             day,
+            name: w.name || "",
             note: w.note || "",
+            template: w.template || null,
+            exercises: this.exercisesOf(w),
             sets: w.sets.map(({ exercise, weight, reps, kind }) => ({ exercise, weight, reps, kind })),
           };
         }),
@@ -218,12 +287,22 @@
           }
           return set;
         });
-        if (sets.length) parsed[w.day] = { note: String(w.note || ""), sets };
+        const exercises = Array.isArray(w.exercises) ? w.exercises.map(norm).filter(Boolean) : [];
+        if (sets.length || exercises.length) {
+          parsed[w.day] = { name: String(w.name || ""), note: String(w.note || ""),
+                            template: w.template || null, exercises, sets };
+        }
       }
       Object.assign(this.data.workouts, parsed);
       if (obj.paired && typeof obj.paired === "object") {
         this.data.paired = { ...(this.data.paired || {}) };
         for (const [ex, v] of Object.entries(obj.paired)) this.data.paired[norm(ex)] = Boolean(v);
+      }
+      if (Array.isArray(obj.templates)) {
+        for (const t of obj.templates) {
+          if (!t || !t.name || !Array.isArray(t.exercises)) continue;
+          this.saveTemplate({ id: t.id, name: String(t.name), exercises: t.exercises.map(norm).filter(Boolean) });
+        }
       }
       this.save();
       return Object.keys(parsed).length;
@@ -237,8 +316,9 @@
     day: todayIso(),
     cursor: todayIso(), // какой месяц/неделю показывает календарь
     calOpen: false,
-    picker: null,
-    editor: null,
+    picker: null,   // выбор упражнений
+    editor: null,   // подходы одного упражнения
+    list: null,     // редактор тренировки или шаблона (название + список упражнений)
     progressEx: null,
   };
 
@@ -246,10 +326,12 @@
   const sheet = $("#sheet");
 
   function render() {
-    const views = { diary: diaryView, history: historyView, progress: progressView, more: moreView };
+    const views = { diary: diaryView, templates: templatesView, history: historyView,
+                    progress: progressView, more: moreView };
     view.innerHTML = views[ui.tab]();
     document.querySelectorAll(".tabbar button").forEach((b) =>
       b.classList.toggle("active", b.dataset.tab === ui.tab));
+    if (ui.tab === "diary") setupGrids(view);
     if (ui.tab === "progress") drawChart();
   }
 
@@ -260,6 +342,91 @@
     t.classList.add("show");
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove("show"), 2400);
+  }
+
+  function openSheet(html) {
+    sheet.innerHTML = html;
+    sheet.classList.add("open");
+    document.body.classList.add("locked");
+  }
+
+  function closeSheet() {
+    sheet.classList.remove("open");
+    document.body.classList.remove("locked");
+    ui.picker = ui.editor = ui.list = null;
+  }
+
+  // ---------- таблица подходов (как в Google Таблицах) ----------
+  //
+  // Слева закреплён номер подхода, дальше столбцы: позапрошлая, прошлая, текущая тренировка.
+  // По умолчанию видна текущая; прошлые открываются прокруткой или кнопкой «‹ Прошлые».
+
+  function pastColumns(ex) {
+    return [...Store.previous(ex, ui.day), [null, []], [null, []]].slice(0, 2).reverse();
+  }
+
+  function gridHeadHTML(past) {
+    const current = ui.day === todayIso() ? "Сегодня" : shortDate(ui.day);
+    let cells = `<div class="c fz h">#</div>`;
+    past.forEach(([d], j) => {
+      const jump = j === 1 ? `<button class="jump" data-act="grid-jump" data-to="cur">${current} ›</button>` : "";
+      cells += `<div class="c h past-h ${j === 0 ? "snap" : ""}">
+        <div><b>${d ? shortDate(d) : "—"}</b><small>${["позапрошлая", "прошлая"][j]}</small></div>${jump}</div>`;
+    });
+    cells += `<div class="c h cur-h snap-end">
+      <div><b>${current}</b><small>текущая</small></div>
+      <button class="jump" data-act="grid-jump" data-to="past">‹ Прошлые</button></div>`;
+    return cells;
+  }
+
+  function pastCellHTML(s, paired) {
+    return s
+      ? `<div class="c past k-line-${s.kind}"><span class="wt">${weightHTML(s, paired)}</span><span class="rp">× ${s.reps}</span></div>`
+      : `<div class="c past none">—</div>`;
+  }
+
+  const kindTag = (s) => (s.kind !== "work" ? `<span class="tag k-${s.kind}">${KIND_LABELS[s.kind]}</span>` : "");
+
+  /** Упражнение в карточке тренировки: таблица только для просмотра, нажатие открывает редактор. */
+  function exerciseBlockHTML(ex, sets) {
+    const paired = Store.isPaired(ex);
+    const past = pastColumns(ex);
+    const rows = Math.max(sets.length, ...past.map(([, s]) => s.length), 1);
+    let cells = gridHeadHTML(past);
+    for (let i = 0; i < rows; i++) {
+      cells += `<div class="c fz n">${i + 1}</div>`;
+      for (const [, ps] of past) cells += pastCellHTML(ps[i], paired);
+      const s = sets[i];
+      if (s) {
+        cells += `<div class="c cur ro"><span class="wt">${weightHTML(s, paired)}</span><span class="rp">× ${s.reps}</span>${kindTag(s)}</div>`;
+      } else {
+        cells += `<div class="c cur ro empty">${i === 0 && !sets.length ? "Нажми, чтобы записать подходы" : "—"}</div>`;
+      }
+    }
+    return `
+      <section class="ex-block" data-act="edit" data-ex="${esc(ex)}">
+        <div class="ex-head">
+          <div><div class="ex-name">${esc(displayName(ex))}</div><div class="ex-group">${esc(groupOf(ex))}</div></div>
+          <span class="chev">${ICONS.right}</span>
+        </div>
+        <div class="grid-scroll ro"><div class="grid">${cells}</div></div>
+      </section>`;
+  }
+
+  /** Прокрутка к текущей тренировке и синхронная прокрутка всех таблиц внутри root. */
+  function setupGrids(root) {
+    const grids = [...root.querySelectorAll(".grid-scroll")];
+    for (const g of grids) g.scrollLeft = g.scrollWidth;
+    let leader = null;
+    for (const g of grids) {
+      g.addEventListener("scroll", () => {
+        if (leader && leader !== g) return;
+        leader = g;
+        for (const other of grids) if (other !== g) other.scrollLeft = g.scrollLeft;
+        clearTimeout(g._syncTimer);
+        g._syncTimer = setTimeout(() => { leader = null; }, 120);
+      }, { passive: true });
+    }
   }
 
   // ---------- дневник ----------
@@ -322,33 +489,30 @@
     let subtitle = `${wd} · тренировки нет`;
     let body;
     if (w) {
-      const groups = new Map();
-      for (const s of w.sets) {
-        if (!groups.has(s.exercise)) groups.set(s.exercise, []);
-        groups.get(s.exercise).push(s);
-      }
+      const exercises = Store.exercisesOf(w);
       const work = w.sets.filter((s) => s.kind !== "warmup").length;
       const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
-      subtitle = `${wd} · ${groups.size} ${plural(groups.size, "упражнение", "упражнения", "упражнений")} · `
+      subtitle = `${wd} · ${exercises.length} ${plural(exercises.length, "упражнение", "упражнения", "упражнений")} · `
         + `${work} ${plural(work, "рабочий подход", "рабочих подхода", "рабочих подходов")} · ${fmt(volume)} кг`;
-      body = [...groups].map(([ex, sets]) => `
-        <button class="card ex-card" data-act="edit" data-ex="${esc(ex)}">
-          <div class="ex-name">${esc(displayName(ex))}</div>
-          <div class="ex-group">${esc(groupOf(ex))}</div>
-          <div class="set-list">${sets.map((s, i) => `
-            <div class="set-line">
-              <span class="n">${i + 1}</span>
-              <span class="wt">${weightHTML(s)}</span>
-              <span class="rp">× ${s.reps}</span>
-              ${s.kind !== "work" ? `<span class="tag k-${s.kind}">${KIND_LABELS[s.kind]}</span>` : ""}
-            </div>`).join("")}</div>
-        </button>`).join("");
-      body += `<button class="btn" data-act="add">+ Добавить упражнение</button>
+      const tpl = w.template && Store.template(w.template);
+      body = `
+        <section class="card workout">
+          <div class="wk-head">
+            <div>
+              <div class="wk-name">${esc(w.name || "Тренировка")}</div>
+              ${tpl ? `<div class="wk-sub">по шаблону «${esc(tpl.name)}»</div>` : ""}
+            </div>
+            <button class="link" data-act="edit-workout">Изменить</button>
+          </div>
+          ${exercises.map((ex) => exerciseBlockHTML(ex, w.sets.filter((s) => s.exercise === ex))).join("")
+            || '<div class="empty muted">В тренировке пока нет упражнений</div>'}
+        </section>
+        <button class="btn soft" data-act="add">+ Добавить упражнения</button>
         <textarea class="note" id="note" rows="2" placeholder="Заметка: самочувствие, сон…">${esc(w.note || "")}</textarea>`;
     } else {
       body = `
-        <div class="card empty"><b>Тренировки нет</b><span class="muted">Добавь первое упражнение</span></div>
-        <button class="btn" data-act="add">+ Добавить упражнение</button>`;
+        <div class="card empty"><b>Тренировки нет</b><span class="muted">Выбери шаблон или упражнения</span></div>
+        <button class="btn" data-act="start">Начать тренировку</button>`;
     }
     return `
       <header class="page-head">
@@ -359,39 +523,43 @@
       <div class="stack" style="margin-top:12px">${body}</div>`;
   }
 
-  // ---------- выбор упражнения ----------
-
-  function openSheet(html) {
-    sheet.innerHTML = html;
-    sheet.classList.add("open");
-    document.body.classList.add("locked");
-  }
-
-  function closeSheet() {
-    sheet.classList.remove("open");
-    document.body.classList.remove("locked");
-    ui.picker = null;
-    ui.editor = null;
-  }
+  // ---------- выбор упражнений (несколько сразу) ----------
+  //
+  // mode: "start" — новая тренировка (название, шаблоны, упражнения)
+  //       "add"   — добавить в текущую тренировку
+  //       "list"  — добавить в редактор тренировки/шаблона (возврат через onDone/onCancel)
 
   function customExercises() {
     return Store.exercises().filter((e) => !INDEX.has(e));
   }
 
-  function openPicker() {
-    ui.picker = { q: "", group: ui.picker?.group || ALL };
+  function openPicker(mode, opts = {}) {
+    ui.picker = { mode, q: "", group: ALL, selected: [], exclude: new Set(opts.exclude || []),
+                  onDone: opts.onDone, onCancel: opts.onCancel };
+    const titles = { start: "Новая тренировка", add: "Добавить упражнения", list: "Добавить упражнения" };
+    const templates = mode === "list" ? [] : Store.templates();
+    const templatesHTML = templates.length ? `
+      <div class="section-title">Шаблоны</div>
+      <div class="pick-list">${templates.map((t) => `
+        <button class="pick-item tpl" data-act="use-template" data-id="${t.id}">
+          <b>${esc(t.name)}</b><small>${t.exercises.map((e) => esc(displayName(e))).join(" · ")}</small>
+        </button>`).join("")}</div>
+      <div class="section-title">${mode === "start" ? "Или отметь упражнения" : "Упражнения"}</div>` : "";
     openSheet(`
       <div class="sheet-head">
-        <button class="link muted" data-act="close">Отмена</button>
-        <h2>Упражнение</h2>
+        <button class="link muted" data-act="picker-cancel">${mode === "list" ? "Назад" : "Отмена"}</button>
+        <h2>${titles[mode]}</h2>
         <span></span>
       </div>
       <div class="sheet-body"><div class="sheet-inner">
+        ${mode === "start" ? `<input id="wk-name" class="field" placeholder="Название, например «Верх»" autocomplete="off" style="margin-bottom:4px">` : ""}
+        ${templatesHTML}
         <input id="pick-q" class="field" type="search" placeholder="Поиск или своё упражнение"
-               autocomplete="off" autocorrect="off" enterkeyhint="done">
+               autocomplete="off" autocorrect="off" enterkeyhint="done" ${templatesHTML ? "" : 'style="margin-top:8px"'}>
         <div class="pills" id="pick-groups"></div>
         <div id="pick-list"></div>
-      </div></div>`);
+      </div></div>
+      <div class="sheet-foot"><button class="btn" id="pick-done" data-act="pick-done"></button></div>`);
     renderPickerList();
   }
 
@@ -405,35 +573,180 @@
 
     const q = norm(p.q);
     const sections = Object.entries(CATALOG).map(([g, names]) => [g, names.map(norm)]);
-    if (custom.length) sections.push([CUSTOM, custom]);
+    const extra = [...new Set([...custom, ...p.selected.filter((e) => !INDEX.has(e))])];
+    if (extra.length) sections.push([CUSTOM, extra]);
     let html = "";
-    const known = new Set([...INDEX.keys(), ...custom]);
+    const known = new Set([...INDEX.keys(), ...extra]);
     if (q && !known.has(q)) {
-      html += `<div class="pick-list" style="margin:10px 0"><button class="pick-item add" data-act="pick" data-ex="${esc(q)}">+ Добавить «${esc(p.q.trim())}»</button></div>`;
+      html += `<div class="pick-list" style="margin:10px 0"><button class="pick-item add" data-act="pick-custom">+ Добавить «${esc(p.q.trim())}»</button></div>`;
     }
     for (const [g, list] of sections) {
       if (p.group !== ALL && p.group !== g) continue;
       const shown = list.filter((ex) => ex.includes(q));
       if (!shown.length) continue;
       html += `<div class="section-title">${esc(g)}</div><div class="pick-list">`
-        + shown.map((ex) => `<button class="pick-item" data-act="pick" data-ex="${esc(ex)}">${esc(displayName(ex))}</button>`).join("")
+        + shown.map((ex) => {
+          if (p.exclude.has(ex)) {
+            return `<div class="pick-item in">${esc(displayName(ex))}<small>уже добавлено</small></div>`;
+          }
+          const on = p.selected.includes(ex);
+          return `<button class="pick-item ${on ? "on" : ""}" data-act="pick-toggle" data-ex="${esc(ex)}">${esc(displayName(ex))}</button>`;
+        }).join("")
         + "</div>";
     }
     $("#pick-list").innerHTML = html || '<div class="empty muted">Ничего не найдено</div>';
+    updatePickDone();
+  }
+
+  function updatePickDone() {
+    const p = ui.picker;
+    const n = p.selected.length;
+    const btn = $("#pick-done");
+    btn.textContent = p.mode === "start"
+      ? (n ? `Начать тренировку · ${n} ${plural(n, "упражнение", "упражнения", "упражнений")}` : "Отметь упражнения или выбери шаблон")
+      : (n ? `Добавить ${n} ${plural(n, "упражнение", "упражнения", "упражнений")}` : "Отметь упражнения");
+    btn.disabled = !n;
+  }
+
+  function finishPicker(exercises, template = null) {
+    const p = ui.picker;
+    if (p.mode === "list") return p.onDone(exercises);
+    if (p.mode === "start") {
+      const name = ($("#wk-name")?.value || "").trim() || (template ? template.name : "");
+      Store.startWorkout(ui.day, name, exercises, template?.id || null);
+    } else {
+      const w = Store.get(ui.day);
+      const keepName = w && w.name;
+      Store.startWorkout(ui.day, keepName ? "" : (template?.name || ""), exercises,
+                         w?.template ? null : template?.id || null);
+    }
+    closeSheet();
+    render();
+  }
+
+  // ---------- редактор тренировки и шаблона ----------
+
+  function openWorkoutEditor() {
+    const w = Store.get(ui.day);
+    if (!w) return;
+    ui.list = { kind: "workout", name: w.name || "", exercises: Store.exercisesOf(w),
+                template: w.template && Store.template(w.template) ? w.template : null,
+                applyTpl: false, saveAsTpl: false };
+    renderListEditor();
+  }
+
+  function openTemplateEditor(id) {
+    const t = id ? Store.template(id) : null;
+    ui.list = { kind: "template", id: t?.id || null, name: t?.name || "", exercises: t ? [...t.exercises] : [] };
+    renderListEditor();
+  }
+
+  function renderListEditor() {
+    const L = ui.list;
+    const isWorkout = L.kind === "workout";
+    const tpl = isWorkout && L.template ? Store.template(L.template) : null;
+    const title = isWorkout ? "Тренировка" : (L.id ? "Шаблон" : "Новый шаблон");
+    const rows = L.exercises.map((ex, i) => `
+      <div class="list-row">
+        <div class="lr-text"><b>${esc(displayName(ex))}</b><small>${esc(groupOf(ex))}</small></div>
+        <button class="icon-btn" data-act="list-move" data-i="${i}" data-d="-1" ${i === 0 ? "disabled" : ""} aria-label="Выше">${ICONS.up}</button>
+        <button class="icon-btn" data-act="list-move" data-i="${i}" data-d="1" ${i === L.exercises.length - 1 ? "disabled" : ""} aria-label="Ниже">${ICONS.down}</button>
+        <button class="icon-btn" data-act="list-del" data-i="${i}" aria-label="Убрать">${ICONS.close}</button>
+      </div>`).join("");
+    let toggle = "";
+    if (isWorkout && tpl) {
+      toggle = `
+        <label class="card toggle-row">
+          <span><b>Применить изменения к шаблону</b><small>Шаблон «${esc(tpl.name)}» получит это название и список упражнений</small></span>
+          <input type="checkbox" id="apply-tpl" ${L.applyTpl ? "checked" : ""}><i class="switch"></i>
+        </label>`;
+    } else if (isWorkout) {
+      toggle = `
+        <label class="card toggle-row">
+          <span><b>Сохранить как шаблон</b><small>Чтобы в следующий раз начать эту тренировку в одно касание</small></span>
+          <input type="checkbox" id="save-tpl" ${L.saveAsTpl ? "checked" : ""}><i class="switch"></i>
+        </label>`;
+    }
+    openSheet(`
+      <div class="sheet-head">
+        <button class="link muted" data-act="close">Отмена</button>
+        <h2>${title}</h2>
+        <button class="link strong" data-act="list-save">Готово</button>
+      </div>
+      <div class="sheet-body"><div class="sheet-inner">
+        <input id="list-name" class="field" value="${esc(L.name)}" autocomplete="off"
+               placeholder="Название, например «Грудь + бицепс»">
+        <div class="section-title">Упражнения</div>
+        ${rows ? `<div class="pick-list">${rows}</div>` : '<div class="card empty muted">Пока пусто</div>'}
+        <div class="stack" style="margin-top:10px">
+          <button class="btn soft" data-act="list-add">+ Добавить упражнения</button>
+          ${toggle}
+          <button class="btn" data-act="list-save">Сохранить</button>
+          ${isWorkout ? '<button class="btn danger" data-act="list-delete">Удалить тренировку</button>' : ""}
+          ${!isWorkout && L.id ? '<button class="btn danger" data-act="list-delete">Удалить шаблон</button>' : ""}
+        </div>
+      </div></div>`);
+  }
+
+  function saveListEditor() {
+    const L = ui.list;
+    const name = L.name.trim();
+    if (L.kind === "template") {
+      if (!name) return toast("Укажи название шаблона");
+      if (!L.exercises.length) return toast("Добавь хотя бы одно упражнение");
+      Store.saveTemplate({ id: L.id, name, exercises: L.exercises });
+      closeSheet();
+      render();
+      return toast("Шаблон сохранён");
+    }
+    const w = Store.get(ui.day);
+    const dropped = [...new Set(w.sets.map((s) => s.exercise))].filter((ex) => !L.exercises.includes(ex));
+    if (dropped.length && !confirm(`Удалить записанные подходы: ${dropped.map(displayName).join(", ")}?`)) return;
+    let template = L.template;
+    if (L.applyTpl && template) {
+      const tpl = Store.template(template);
+      Store.saveTemplate({ id: template, name: name || tpl.name, exercises: L.exercises });
+    }
+    if (L.saveAsTpl) {
+      if (!name) return toast("Дай тренировке название, чтобы сохранить шаблон");
+      template = Store.saveTemplate({ name, exercises: L.exercises });
+    }
+    Store.updateWorkout(ui.day, name, L.exercises, template);
+    closeSheet();
+    render();
+    toast(L.applyTpl ? "Тренировка и шаблон обновлены" : L.saveAsTpl ? "Шаблон создан" : "Сохранено");
+  }
+
+  // ---------- шаблоны ----------
+
+  function templatesView() {
+    const list = Store.templates();
+    const cards = list.length
+      ? list.map((t) => `
+        <button class="card hist-card" data-act="edit-template" data-id="${t.id}">
+          <div class="hist-date">${esc(t.name)}</div>
+          <div class="hist-meta">${t.exercises.map((e) => esc(displayName(e))).join(" · ")}</div>
+        </button>`).join("")
+      : '<div class="card empty"><b>Шаблонов пока нет</b><span class="muted">Например, «Верх», «Грудь + бицепс» или «Плечи + ноги»</span></div>';
+    return `
+      <header class="page-head"><h1>Шаблоны</h1>
+        <p class="muted">Готовые наборы упражнений — выбираются при начале тренировки</p></header>
+      <div class="stack">${cards}<button class="btn" data-act="new-template">+ Новый шаблон</button></div>`;
   }
 
   // ---------- редактор подходов ----------
 
   function openEditor(ex) {
     const existing = Store.sets(ui.day, ex);
-    ui.picker = null;
+    const w = Store.get(ui.day);
     ui.editor = {
       ex,
-      existed: existing.length > 0,
+      inWorkout: !!w && Store.exercisesOf(w).includes(ex),
       rows: existing.length
         ? existing.map((s) => ({ k: s.kind, w: s.weight ? fmt(s.weight) : "", r: String(s.reps) }))
         : [0, 1, 2].map(() => ({ k: "work", w: "", r: "" })),
-      prev: Store.previous(ex, ui.day),
+      past: pastColumns(ex),
+      hasPast: Store.previous(ex, ui.day).length > 0,
       paired: Store.isPaired(ex),
       error: "",
     };
@@ -449,31 +762,12 @@
 
   function renderEditor() {
     const e = ui.editor;
-    // столбцы слева направо: позапрошлая, прошлая, текущая — как даты в таблице
-    // прошлых столбцов всегда два: если данных нет, показываем пустые — так видно, где они будут
-    const past = [...e.prev, [null, []], [null, []]].slice(0, 2).reverse();
+    const past = e.past;
     const rowCount = Math.max(e.rows.length, ...past.map(([, sets]) => sets.length));
-    const isToday = ui.day === todayIso();
-    const current = isToday ? "Сегодня" : shortDate(ui.day);
-
-    let cells = `<div class="c fz h">#</div>`;
-    past.forEach(([d], j) => {
-      const jump = j === 1 ? `<button class="jump" data-act="grid-jump" data-to="cur">${current} ›</button>` : "";
-      cells += `<div class="c h past-h ${j === 0 ? "snap" : ""}">
-        <div><b>${d ? shortDate(d) : "—"}</b><small>${["позапрошлая", "прошлая"][j]}</small></div>${jump}</div>`;
-    });
-    cells += `<div class="c h cur-h snap-end">
-      <div><b>${current}</b><small>текущая</small></div>
-      <button class="jump" data-act="grid-jump" data-to="past">‹ Прошлые</button></div>`;
-
+    let cells = gridHeadHTML(past);
     for (let i = 0; i < rowCount; i++) {
       cells += `<div class="c fz n">${i + 1}</div>`;
-      for (const [, sets] of past) {
-        const s = sets[i];
-        cells += s
-          ? `<div class="c past k-line-${s.kind}"><span class="wt">${weightHTML(s, e.paired)}</span><span class="rp">× ${s.reps}</span></div>`
-          : `<div class="c past none">—</div>`;
-      }
+      for (const [, sets] of past) cells += pastCellHTML(sets[i], e.paired);
       const row = e.rows[i];
       if (row) {
         cells += `
@@ -493,17 +787,14 @@
         cells += `<div class="c cur"></div>`;
       }
     }
-
-    const hint = e.prev.length
+    const hint = e.hasPast
       ? "Нажми «Прошлые» или проведи по таблице вправо, чтобы сравнить с прошлыми тренировками"
       : "Это упражнение записывается впервые — прошлых результатов пока нет";
     $("#editor").innerHTML = `
       <p class="prev-info">${esc(groupOf(e.ex))} · ${hint}</p>
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ""}
       <div class="card grid-card">
-        <div class="grid-scroll" id="grid-scroll">
-          <div class="grid">${cells}</div>
-        </div>
+        <div class="grid-scroll" id="grid-scroll"><div class="grid">${cells}</div></div>
       </div>
       <label class="card toggle-row">
         <span><b>Два снаряда</b><small>Вес одной гантели или стороны тренажёра, рядом пишется ×2</small></span>
@@ -512,9 +803,8 @@
       <div class="stack" style="margin-top:14px">
         <button class="btn soft" data-act="add-row">+ Добавить подход</button>
         <button class="btn" data-act="save">Сохранить</button>
-        ${e.existed ? '<button class="btn danger" data-act="del-ex">Удалить упражнение из тренировки</button>' : ""}
+        ${e.inWorkout ? '<button class="btn danger" data-act="del-ex">Убрать упражнение из тренировки</button>' : ""}
       </div>`;
-    // по умолчанию видна текущая тренировка (крайний правый столбец)
     const scroller = $("#grid-scroll");
     scroller.scrollLeft = scroller.scrollWidth;
   }
@@ -534,12 +824,8 @@
       }
       sets.push({ exercise: e.ex, weight, reps, kind: row.k });
     }
-    if (!sets.length && e.rows.length) {
-      e.error = "Заполни хотя бы один подход";
-      return renderEditor();
-    }
     if (e.paired !== Store.isPaired(e.ex)) Store.setPaired(e.ex, e.paired);
-    if (sets.length || e.existed) Store.saveExercise(ui.day, e.ex, sets);
+    Store.saveExercise(ui.day, e.ex, sets);
     closeSheet();
     render();
     if (sets.length) toast("Сохранено");
@@ -551,13 +837,13 @@
     const days = Store.days();
     const list = days.length ? days.map((day) => {
       const w = Store.get(day);
-      const names = [...new Set(w.sets.map((s) => s.exercise))].map(displayName).join(", ");
+      const names = Store.exercisesOf(w).map(displayName).join(", ");
       const work = w.sets.filter((s) => s.kind !== "warmup").length;
       const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
       const d = parse(day);
       return `
         <button class="card hist-card" data-act="open-day" data-day="${day}">
-          <div class="hist-date">${longDate(day)} ${d.getFullYear()}, ${weekday(day)}</div>
+          <div class="hist-date">${w.name ? `${esc(w.name)} · ` : ""}${longDate(day)} ${d.getFullYear()}, ${weekday(day)}</div>
           <div class="hist-meta">${esc(names)}<br>${work} раб. ${plural(work, "подход", "подхода", "подходов")} · ${fmt(volume)} кг</div>
           ${w.note ? `<div class="hist-note">${esc(w.note)}</div>` : ""}
         </button>`;
@@ -686,7 +972,7 @@
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.3</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.4</p>`;
   }
 
   async function exportData() {
@@ -740,11 +1026,73 @@
       }
       render();
     },
-    add: () => openPicker(),
-    edit: (el) => openEditor(el.dataset.ex),
     close: () => closeSheet(),
+
+    // выбор упражнений
+    start: () => openPicker("start"),
+    add: () => openPicker("add", { exclude: Store.exercisesOf(Store.get(ui.day)) }),
+    "picker-cancel": () => {
+      if (ui.picker.mode === "list") ui.picker.onCancel();
+      else closeSheet();
+    },
     "pick-group": (el) => { ui.picker.group = el.dataset.group; renderPickerList(); },
-    pick: (el) => openEditor(el.dataset.ex),
+    "pick-toggle": (el) => {
+      const sel = ui.picker.selected;
+      const ex = el.dataset.ex;
+      const i = sel.indexOf(ex);
+      if (i >= 0) sel.splice(i, 1); else sel.push(ex);
+      el.classList.toggle("on", i < 0);
+      updatePickDone();
+    },
+    "pick-custom": () => {
+      const ex = norm(ui.picker.q);
+      if (ex && !ui.picker.selected.includes(ex)) ui.picker.selected.push(ex);
+      ui.picker.q = "";
+      $("#pick-q").value = "";
+      renderPickerList();
+    },
+    "pick-done": () => { if (ui.picker.selected.length) finishPicker(ui.picker.selected); },
+    "use-template": (el) => {
+      const t = Store.template(el.dataset.id);
+      if (t) finishPicker(t.exercises, t);
+    },
+
+    // тренировка и шаблоны
+    "edit-workout": () => openWorkoutEditor(),
+    "new-template": () => openTemplateEditor(null),
+    "edit-template": (el) => openTemplateEditor(el.dataset.id),
+    "list-move": (el) => {
+      const list = ui.list.exercises;
+      const i = Number(el.dataset.i), j = i + Number(el.dataset.d);
+      if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      renderListEditor();
+    },
+    "list-del": (el) => { ui.list.exercises.splice(Number(el.dataset.i), 1); renderListEditor(); },
+    "list-add": () => {
+      const L = ui.list;
+      openPicker("list", {
+        exclude: L.exercises,
+        onDone: (exs) => { ui.picker = null; L.exercises.push(...exs); renderListEditor(); },
+        onCancel: () => { ui.picker = null; renderListEditor(); },
+      });
+    },
+    "list-save": () => saveListEditor(),
+    "list-delete": () => {
+      const L = ui.list;
+      if (L.kind === "workout") {
+        if (!confirm("Удалить всю тренировку за этот день?")) return;
+        Store.deleteDay(ui.day);
+      } else {
+        if (!confirm(`Удалить шаблон «${L.name}»? Прошлые тренировки останутся.`)) return;
+        Store.deleteTemplate(L.id);
+      }
+      closeSheet();
+      render();
+    },
+
+    // подходы
+    edit: (el) => openEditor(el.dataset.ex),
     "add-row": () => {
       const rows = ui.editor.rows;
       const last = rows[rows.length - 1];
@@ -752,17 +1100,18 @@
       renderEditor();
     },
     "grid-jump": (el) => {
-      const sc = $("#grid-scroll");
+      const sc = el.closest(".grid-scroll");
       sc.scrollTo({ left: el.dataset.to === "past" ? 0 : sc.scrollWidth, behavior: "smooth" });
     },
     "del-row": (el) => { ui.editor.rows.splice(Number(el.dataset.i), 1); renderEditor(); },
     save: () => saveEditor(),
     "del-ex": () => {
-      if (!confirm(`Удалить «${displayName(ui.editor.ex)}» из тренировки?`)) return;
-      Store.saveExercise(ui.day, ui.editor.ex, []);
+      if (!confirm(`Убрать «${displayName(ui.editor.ex)}» из тренировки?`)) return;
+      Store.removeExercise(ui.day, ui.editor.ex);
       closeSheet();
       render();
     },
+
     "open-day": (el) => {
       ui.day = el.dataset.day;
       ui.cursor = ui.day;
@@ -792,7 +1141,7 @@
 
   document.addEventListener("click", (event) => {
     const el = event.target.closest("[data-act]");
-    if (el && actions[el.dataset.act]) actions[el.dataset.act](el);
+    if (el && !el.disabled && actions[el.dataset.act]) actions[el.dataset.act](el);
   });
 
   document.addEventListener("input", (event) => {
@@ -802,6 +1151,8 @@
       renderPickerList();
     } else if (t.id === "note") {
       Store.setNote(ui.day, t.value.trim());
+    } else if (t.id === "list-name" && ui.list) {
+      ui.list.name = t.value;
     } else if ((t.dataset.f === "w" || t.dataset.f === "r") && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)][t.dataset.f] = t.value;
     }
@@ -817,24 +1168,24 @@
     } else if (t.dataset.f === "k" && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)].k = t.value;
       t.className = `kind k-${t.value}`;
-    } else if (event.target.id === "progress-ex") {
-      ui.progressEx = event.target.value;
+    } else if (t.id === "apply-tpl" && ui.list) {
+      ui.list.applyTpl = t.checked;
+    } else if (t.id === "save-tpl" && ui.list) {
+      ui.list.saveAsTpl = t.checked;
+    } else if (t.id === "progress-ex") {
+      ui.progressEx = t.value;
       render();
-    } else if (event.target.id === "import-file") {
-      const file = event.target.files[0];
-      event.target.value = "";
+    } else if (t.id === "import-file") {
+      const file = t.files[0];
+      t.value = "";
       if (file) importFile(file);
     }
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
-    if (event.target.id === "pick-q") {
-      const first = document.querySelector("#pick-list [data-act=pick]");
-      if (first) openEditor(first.dataset.ex);
-    } else if (event.target.dataset.f) {
-      event.target.blur();
-    }
+    const t = event.target;
+    if (t.id === "pick-q" || t.id === "wk-name" || t.id === "list-name" || t.dataset.f) t.blur();
   });
 
   let resizeTimer;
@@ -847,7 +1198,7 @@
   let lastToday = todayIso();
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible" || todayIso() === lastToday) return;
-    if (ui.day === lastToday && !ui.editor) { ui.day = ui.cursor = todayIso(); render(); }
+    if (ui.day === lastToday && !sheet.classList.contains("open")) { ui.day = ui.cursor = todayIso(); render(); }
     lastToday = todayIso();
   });
 
