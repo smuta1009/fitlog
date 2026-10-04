@@ -45,7 +45,24 @@
   <script src="app.js"></script>
   <script>
     if ("serviceWorker" in navigator) {
-      window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));
+      // когда установилась новая версия — один раз перезагрузиться, чтобы сразу показать её
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!hadController || reloaded || document.querySelector(".sheet.open")) return;
+        reloaded = true;
+        location.reload();
+      });
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("sw.js", { updateViaCache: "none" })
+          .then((reg) => {
+            reg.update();
+            document.addEventListener("visibilitychange", () => {
+              if (document.visibilityState === "visible") reg.update();
+            });
+          })
+          .catch(() => {});
+      });
     }
   </script>
 </body>

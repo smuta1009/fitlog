@@ -1,6 +1,6 @@
 // Кэширует приложение, чтобы оно открывалось без интернета.
 // При выпуске новой версии увеличь номер в CACHE.
-const CACHE = "fitlog-v3";
+const CACHE = "fitlog-v4";
 const ASSETS = [
   "./",
   "./index.html",
@@ -13,7 +13,9 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)));
+  // cache: "reload" — брать файлы с сервера, а не из HTTP-кэша браузера (иначе можно закэшировать старую версию)
+  event.waitUntil(caches.open(CACHE).then((cache) =>
+    cache.addAll(ASSETS.map((url) => new Request(url, { cache: "reload" })))));
   self.skipWaiting();
 });
 
@@ -32,7 +34,7 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(event.request, { ignoreSearch: true });
-      const network = fetch(event.request)
+      const network = fetch(event.request.url, { cache: "no-cache" })
         .then((response) => {
           if (response.ok) cache.put(event.request, response.clone());
           return response;
