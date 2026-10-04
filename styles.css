@@ -252,11 +252,11 @@ h2 { font-size: 17px; margin: 0; }
   align-items: center;
   gap: 3px;
   padding: 4px 0;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   color: var(--muted);
 }
-.tabbar svg { width: 25px; height: 25px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.tabbar svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .tabbar button.active { color: var(--accent); }
 
 /* ---------- шторка (выбор упражнения и подходы) ---------- */
@@ -581,3 +581,84 @@ h2 { font-size: 17px; margin: 0; }
   max-width: calc(100vw - 32px);
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- тренировка одной карточкой ---------- */
+
+.card.workout { padding: 0; overflow: hidden; }
+.wk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px 12px;
+}
+.wk-name { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+.wk-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+.ex-block { border-top: 0.5px solid var(--line); cursor: pointer; }
+.ex-block:active .ex-head { background: var(--hover); }
+.ex-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 8px 16px;
+}
+.ex-head .chev svg { width: 18px; height: 18px; stroke: var(--muted); fill: none; stroke-width: 2; }
+.workout > .empty { padding: 20px 16px 24px; }
+
+.grid-scroll.ro .c { min-height: 42px; }
+.grid-scroll.ro .c.h { min-height: 42px; }
+.grid-scroll.ro .c.past { flex-direction: row; align-items: center; justify-content: flex-start; gap: 5px; }
+.grid-scroll.ro .c.past .wt, .c.cur.ro .wt { font-weight: 600; }
+.grid-scroll.ro .c:not(.h) { border-bottom-color: transparent; }
+.c.cur.ro { gap: 6px; font-size: 15px; padding: 0 10px; }
+.c.cur.ro .rp { color: var(--muted); }
+.c.cur.ro .tag { margin-left: auto; }
+.c.cur.ro.empty { color: var(--muted); font-size: 14px; }
+
+/* ---------- выбор нескольких упражнений ---------- */
+
+.sheet-foot {
+  padding: 10px 16px calc(env(safe-area-inset-bottom) + 10px);
+  background: var(--bg);
+  border-top: 0.5px solid var(--line);
+}
+.sheet-foot .btn { max-width: 640px; margin: 0 auto; }
+.btn:disabled { opacity: 0.45; }
+.pick-item { position: relative; padding-right: 48px; }
+.pick-item.on { color: var(--accent); font-weight: 600; }
+.pick-item::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--line);
+}
+.pick-item.on::after {
+  background: var(--accent) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 12.5l4 4 8-9'/%3E%3C/svg%3E") center / 15px no-repeat;
+  box-shadow: none;
+}
+.pick-item.add::after, .pick-item.tpl::after, .pick-item.in::after { display: none; }
+.pick-item.in { color: var(--muted); display: flex; justify-content: space-between; padding-right: 16px; }
+.pick-item small, .pick-item.tpl small { font-size: 12px; color: var(--muted); font-weight: 400; }
+.pick-item.tpl { padding-right: 16px; }
+.pick-item.tpl b { display: block; }
+.pick-item.tpl small { display: block; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---------- редактор тренировки / шаблона ---------- */
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 8px 8px 16px;
+  border-top: 0.5px solid var(--line);
+}
+.list-row:first-child { border-top: 0; }
+.lr-text { flex: 1; min-width: 0; }
+.lr-text b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lr-text small { font-size: 12px; color: var(--muted); }
+.icon-btn:disabled { opacity: 0.25; }
