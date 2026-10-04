@@ -36,6 +36,14 @@
   const displayName = (ex) => INDEX.get(ex)?.name ?? ex.charAt(0).toUpperCase() + ex.slice(1);
   const groupOf = (ex) => INDEX.get(ex)?.group ?? CUSTOM;
 
+  // Упражнения с двумя снарядами: вес пишется для одного, в объёме учитываются оба.
+  // Для остальных пользователь может включить это сам (настройка хранится по упражнению).
+  const PAIRED_DEFAULT = new Set([
+    "Жим гантелей лёжа", "Жим гантелей на наклонной скамье", "Разводка гантелей лёжа",
+    "Выпады с гантелями", "Жим гантелей сидя", "Махи гантелями в стороны", "Махи гантелями в наклоне",
+    "Подъём гантелей на бицепс", "Молотковые сгибания",
+  ].map(norm));
+
   // ---------- форматирование ----------
 
   const KINDS = ["warmup", "work", "failure"];
@@ -61,7 +69,9 @@
   const longDate = (s) => { const d = parse(s); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
   const weekday = (s) => WEEKDAYS[parse(s).getDay()];
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
-  const setText = (s) => (s.weight ? `${fmt(s.weight)} × ${s.reps}` : `${s.reps} повт.`);
+  /** Вес подхода: «50 кг», «20 кг (×2)» для двух снарядов, «свой вес» без отягощения. */
+  const weightHTML = (s, paired = Store.isPaired(s.exercise)) =>
+    (s.weight ? `${fmt(s.weight)} кг${paired ? ' <small class="x2">(×2)</small>' : ""}` : "свой вес");
   const orm = (s) => (s.reps === 1 ? s.weight : s.weight * (1 + s.reps / 30));
   const plural = (n, one, few, many) => {
     if (n % 10 === 1 && n % 100 !== 11) return one;
@@ -128,6 +138,18 @@
 
     deleteDay(day) { delete this.data.workouts[day]; this.save(); },
 
+    isPaired(ex) { return this.data.paired?.[ex] ?? PAIRED_DEFAULT.has(ex); },
+
+    setPaired(ex, value) {
+      this.data.paired = this.data.paired || {};
+      if (value === PAIRED_DEFAULT.has(ex)) delete this.data.paired[ex];
+      else this.data.paired[ex] = value;
+      this.save();
+    },
+
+    /** Объём подхода в кг с учётом обоих снарядов. */
+    volume(s) { return s.weight * s.reps * (this.isPaired(s.exercise) ? 2 : 1); },
+
     days() { return Object.keys(this.data.workouts).sort().reverse(); },
 
     previous(ex, before, count = 2) {
@@ -158,7 +180,7 @@
         const dayOrm = Math.max(...work.map(orm));
         history.push([d, dayBest, dayOrm]);
         sets += work.length;
-        volume += work.reduce((a, s) => a + s.weight * s.reps, 0);
+        volume += work.reduce((a, s) => a + this.volume(s), 0);
         best = Math.max(best, dayBest);
         bestOrm = Math.max(bestOrm, dayOrm);
       }
@@ -171,6 +193,7 @@
         app: "fitlog",
         version: 1,
         exported: new Date().toISOString(),
+        paired: { ...(this.data.paired || {}) },
         workouts: this.days().reverse().map((day) => {
           const w = this.data.workouts[day];
           return {
@@ -198,6 +221,10 @@
         if (sets.length) parsed[w.day] = { note: String(w.note || ""), sets };
       }
       Object.assign(this.data.workouts, parsed);
+      if (obj.paired && typeof obj.paired === "object") {
+        this.data.paired = { ...(this.data.paired || {}) };
+        for (const [ex, v] of Object.entries(obj.paired)) this.data.paired[norm(ex)] = Boolean(v);
+      }
       this.save();
       return Object.keys(parsed).length;
     },
@@ -301,14 +328,20 @@
         groups.get(s.exercise).push(s);
       }
       const work = w.sets.filter((s) => s.kind !== "warmup").length;
-      const volume = w.sets.reduce((a, s) => a + s.weight * s.reps, 0);
+      const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
       subtitle = `${wd} · ${groups.size} ${plural(groups.size, "упражнение", "упражнения", "упражнений")} · `
         + `${work} ${plural(work, "рабочий подход", "рабочих подхода", "рабочих подходов")} · ${fmt(volume)} кг`;
       body = [...groups].map(([ex, sets]) => `
         <button class="card ex-card" data-act="edit" data-ex="${esc(ex)}">
           <div class="ex-name">${esc(displayName(ex))}</div>
           <div class="ex-group">${esc(groupOf(ex))}</div>
-          <div class="chips">${sets.map((s) => `<span class="chip k-${s.kind}">${setText(s)}</span>`).join("")}</div>
+          <div class="set-list">${sets.map((s, i) => `
+            <div class="set-line">
+              <span class="n">${i + 1}</span>
+              <span class="wt">${weightHTML(s)}</span>
+              <span class="rp">× ${s.reps}</span>
+              ${s.kind !== "work" ? `<span class="tag k-${s.kind}">${KIND_LABELS[s.kind]}</span>` : ""}
+            </div>`).join("")}</div>
         </button>`).join("");
       body += `<button class="btn" data-act="add">+ Добавить упражнение</button>
         <textarea class="note" id="note" rows="2" placeholder="Заметка: самочувствие, сон…">${esc(w.note || "")}</textarea>`;
@@ -401,6 +434,7 @@
         ? existing.map((s) => ({ k: s.kind, w: s.weight ? fmt(s.weight) : "", r: String(s.reps) }))
         : [0, 1, 2].map(() => ({ k: "work", w: "", r: "" })),
       prev: Store.previous(ex, ui.day),
+      paired: Store.isPaired(ex),
       error: "",
     };
     openSheet(`
@@ -415,42 +449,69 @@
 
   function renderEditor() {
     const e = ui.editor;
-    const prevInfo = e.prev.length
-      ? `${esc(groupOf(e.ex))} · справа — прошлые тренировки: ${e.prev.map(([d]) => shortDate(d)).join(", ")}`
-      : `${esc(groupOf(e.ex))} · раньше это упражнение не выполнялось`;
-    const rows = e.rows.map((row, i) => {
-      const prev = e.prev.map(([d, sets]) => {
+    // столбцы слева направо: позапрошлая, прошлая, текущая — как даты в таблице
+    const past = [...e.prev].reverse();
+    const rowCount = Math.max(e.rows.length, ...past.map(([, sets]) => sets.length));
+    const isToday = ui.day === todayIso();
+    const labels = past.length === 2 ? ["позапрошлая", "прошлая"] : ["прошлая"];
+
+    let cells = `<div class="c fz h">#</div>`;
+    past.forEach(([d], j) => {
+      cells += `<div class="c h past-h ${j === 0 ? "snap" : ""}"><b>${shortDate(d)}</b><small>${labels[j]}</small></div>`;
+    });
+    cells += `<div class="c h cur-h snap"><b>${isToday ? "Сегодня" : shortDate(ui.day)}</b><small>текущая</small></div>`;
+
+    for (let i = 0; i < rowCount; i++) {
+      cells += `<div class="c fz n">${i + 1}</div>`;
+      for (const [, sets] of past) {
         const s = sets[i];
-        if (!s) return `<div><small>${shortDate(d)}:</small> <span class="none">—</span></div>`;
-        return `<div><small>${shortDate(d)}:</small> <span class="v-${s.kind}">${setText(s)}</span></div>`;
-      }).join("");
-      return `
-        <div class="set-row">
-          <div class="set-top">
-            <span class="set-num">${i + 1}</span>
-            <div class="seg">${KINDS.map((k) =>
-              `<button class="k-${k} ${row.k === k ? "on" : ""}" data-act="kind" data-i="${i}" data-k="${k}">${KIND_LABELS[k]}</button>`).join("")}
-            </div>
-            <button class="icon-btn" data-act="del-row" data-i="${i}" aria-label="Удалить подход">${ICONS.close}</button>
-          </div>
-          <div class="set-bottom">
-            <label class="num"><span>вес, кг</span>
+        cells += s
+          ? `<div class="c past k-line-${s.kind}"><span class="wt">${weightHTML(s, e.paired)}</span><span class="rp">× ${s.reps}</span></div>`
+          : `<div class="c past none">—</div>`;
+      }
+      const row = e.rows[i];
+      if (row) {
+        cells += `
+          <div class="c cur">
+            <select class="kind k-${row.k}" data-i="${i}" data-f="k" aria-label="Тип подхода">
+              ${KINDS.map((k) => `<option value="${k}" ${row.k === k ? "selected" : ""}>${KIND_LABELS[k]}</option>`).join("")}
+            </select>
+            <label class="num"><span>кг${e.paired ? " (×2)" : ""}</span>
               <input data-i="${i}" data-f="w" inputmode="decimal" value="${esc(row.w)}" placeholder="0"></label>
-            <label class="num"><span>повторы</span>
+            <label class="num"><span>повт.</span>
               <input data-i="${i}" data-f="r" inputmode="numeric" pattern="[0-9]*" value="${esc(row.r)}" placeholder="0"></label>
-            <div class="prev">${prev}</div>
-          </div>
-        </div>`;
-    }).join("");
+            <button class="icon-btn" data-act="del-row" data-i="${i}" aria-label="Удалить подход">${ICONS.close}</button>
+          </div>`;
+      } else if (i === e.rows.length) {
+        cells += `<div class="c cur"><button class="add-cell" data-act="add-row">+ подход</button></div>`;
+      } else {
+        cells += `<div class="c cur"></div>`;
+      }
+    }
+
+    const hint = past.length
+      ? "Потяни таблицу вправо — там прошлые тренировки"
+      : "Раньше это упражнение не выполнялось";
     $("#editor").innerHTML = `
-      <p class="prev-info">${prevInfo}</p>
+      <p class="prev-info">${esc(groupOf(e.ex))} · ${hint}</p>
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ""}
-      ${rows || '<div class="card empty muted">Подходов нет. Нажми «Готово», чтобы убрать упражнение из тренировки.</div>'}
+      <div class="card grid-card">
+        <div class="grid-scroll" id="grid-scroll">
+          <div class="grid" style="--past:${past.length}">${cells}</div>
+        </div>
+      </div>
+      <label class="card toggle-row">
+        <span><b>Два снаряда</b><small>Вес одной гантели или стороны тренажёра, рядом пишется ×2</small></span>
+        <input type="checkbox" id="paired" ${e.paired ? "checked" : ""}><i class="switch"></i>
+      </label>
       <div class="stack" style="margin-top:14px">
         <button class="btn soft" data-act="add-row">+ Добавить подход</button>
         <button class="btn" data-act="save">Сохранить</button>
         ${e.existed ? '<button class="btn danger" data-act="del-ex">Удалить упражнение из тренировки</button>' : ""}
       </div>`;
+    // по умолчанию видна текущая тренировка (крайний правый столбец)
+    const scroller = $("#grid-scroll");
+    scroller.scrollLeft = scroller.scrollWidth;
   }
 
   function saveEditor() {
@@ -472,6 +533,7 @@
       e.error = "Заполни хотя бы один подход";
       return renderEditor();
     }
+    if (e.paired !== Store.isPaired(e.ex)) Store.setPaired(e.ex, e.paired);
     if (sets.length || e.existed) Store.saveExercise(ui.day, e.ex, sets);
     closeSheet();
     render();
@@ -486,7 +548,7 @@
       const w = Store.get(day);
       const names = [...new Set(w.sets.map((s) => s.exercise))].map(displayName).join(", ");
       const work = w.sets.filter((s) => s.kind !== "warmup").length;
-      const volume = w.sets.reduce((a, s) => a + s.weight * s.reps, 0);
+      const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
       const d = parse(day);
       return `
         <button class="card hist-card" data-act="open-day" data-day="${day}">
@@ -615,7 +677,7 @@
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.0</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.1</p>`;
   }
 
   async function exportData() {
@@ -674,7 +736,6 @@
     close: () => closeSheet(),
     "pick-group": (el) => { ui.picker.group = el.dataset.group; renderPickerList(); },
     pick: (el) => openEditor(el.dataset.ex),
-    kind: (el) => { ui.editor.rows[Number(el.dataset.i)].k = el.dataset.k; renderEditor(); },
     "add-row": () => {
       const rows = ui.editor.rows;
       const last = rows[rows.length - 1];
@@ -717,13 +778,22 @@
       renderPickerList();
     } else if (t.id === "note") {
       Store.setNote(ui.day, t.value.trim());
-    } else if (t.dataset.f && ui.editor) {
+    } else if ((t.dataset.f === "w" || t.dataset.f === "r") && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)][t.dataset.f] = t.value;
     }
   });
 
   document.addEventListener("change", (event) => {
-    if (event.target.id === "progress-ex") {
+    const t = event.target;
+    if (t.id === "paired" && ui.editor) {
+      ui.editor.paired = t.checked;
+      const scroll = $("#grid-scroll").scrollLeft;
+      renderEditor();
+      $("#grid-scroll").scrollLeft = scroll;
+    } else if (t.dataset.f === "k" && ui.editor) {
+      ui.editor.rows[Number(t.dataset.i)].k = t.value;
+      t.className = `kind k-${t.value}`;
+    } else if (event.target.id === "progress-ex") {
       ui.progressEx = event.target.value;
       render();
     } else if (event.target.id === "import-file") {
