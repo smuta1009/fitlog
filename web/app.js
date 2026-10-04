@@ -34,7 +34,8 @@
     for (const name of names) INDEX.set(norm(name), { name, group });
   }
   const displayName = (ex) => INDEX.get(ex)?.name ?? ex.charAt(0).toUpperCase() + ex.slice(1);
-  const groupOf = (ex) => INDEX.get(ex)?.group ?? CUSTOM;
+  const groupOf = (ex) => INDEX.get(ex)?.group ?? Store.data.groups?.[ex] ?? CUSTOM;
+  const GROUPS = Object.keys(CATALOG);
 
   // Упражнения с двумя снарядами: вес пишется для одного, в объёме учитываются оба.
   // Для остальных пользователь может включить это сам (настройка хранится по упражнению).
@@ -70,6 +71,15 @@
   const weekday = (s) => WEEKDAYS[parse(s).getDay()];
   const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
   /** Вес подхода: «50 кг», «20 кг (×2)» для двух снарядов, «свой вес» без отягощения. */
+  /** Сравнение подхода с тем же подходом прошлой тренировки: up / same / down или "" (не с чем сравнивать).
+   *  Повторы сравниваются, только если вес не изменился. */
+  function compare(cur, prev, field) {
+    if (!cur || !prev || !(cur.reps > 0)) return "";
+    if (field === "w") return cur.weight > prev.weight ? "up" : cur.weight < prev.weight ? "down" : "same";
+    if (cur.weight !== prev.weight) return "";
+    return cur.reps > prev.reps ? "up" : cur.reps < prev.reps ? "down" : "same";
+  }
+
   const weightHTML = (s, paired = Store.isPaired(s.exercise)) =>
     (s.weight ? `${fmt(s.weight)} кг${paired ? ' <small class="x2">(×2)</small>' : ""}` : "свой вес");
   const orm = (s) => (s.reps === 1 ? s.weight : s.weight * (1 + s.reps / 30));
@@ -202,6 +212,27 @@
       this.save();
     },
 
+    setGroup(ex, group) {
+      this.data.groups = this.data.groups || {};
+      if (group && group !== CUSTOM) this.data.groups[ex] = group;
+      else delete this.data.groups[ex];
+      this.save();
+    },
+
+    // вес тела: body[day] = кг
+    bodyEntries() {
+      return Object.entries(this.data.body || {}).sort(([a], [b]) => (a < b ? -1 : 1));
+    },
+    setBody(day, kg) {
+      this.data.body = this.data.body || {};
+      this.data.body[day] = kg;
+      this.save();
+    },
+    deleteBody(day) {
+      if (this.data.body) delete this.data.body[day];
+      this.save();
+    },
+
     isPaired(ex) { return this.data.paired?.[ex] ?? PAIRED_DEFAULT.has(ex); },
 
     setPaired(ex, value) {
@@ -259,6 +290,8 @@
         version: 2,
         exported: new Date().toISOString(),
         paired: { ...(this.data.paired || {}) },
+        groups: { ...(this.data.groups || {}) },
+        body: { ...(this.data.body || {}) },
         templates: this.data.templates,
         workouts: this.days().reverse().map((day) => {
           const w = this.data.workouts[day];
@@ -298,6 +331,16 @@
         this.data.paired = { ...(this.data.paired || {}) };
         for (const [ex, v] of Object.entries(obj.paired)) this.data.paired[norm(ex)] = Boolean(v);
       }
+      if (obj.groups && typeof obj.groups === "object") {
+        this.data.groups = { ...(this.data.groups || {}) };
+        for (const [ex, g] of Object.entries(obj.groups)) if (GROUPS.includes(g)) this.data.groups[norm(ex)] = g;
+      }
+      if (obj.body && typeof obj.body === "object") {
+        this.data.body = { ...(this.data.body || {}) };
+        for (const [day, kg] of Object.entries(obj.body)) {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(day) && Number(kg) > 0) this.data.body[day] = Number(kg);
+        }
+      }
       if (Array.isArray(obj.templates)) {
         for (const t of obj.templates) {
           if (!t || !t.name || !Array.isArray(t.exercises)) continue;
@@ -320,6 +363,7 @@
     editor: null,   // подходы одного упражнения
     list: null,     // редактор тренировки или шаблона (название + список упражнений)
     progressEx: null,
+    bodyRange: 90, // дней на графике веса; 0 — всё время
   };
 
   const view = $("#view");
@@ -327,12 +371,12 @@
 
   function render() {
     const views = { diary: diaryView, templates: templatesView, history: historyView,
-                    progress: progressView, more: moreView };
+                    progress: progressView, body: bodyView, more: moreView };
     view.innerHTML = views[ui.tab]();
     document.querySelectorAll(".tabbar button").forEach((b) =>
       b.classList.toggle("active", b.dataset.tab === ui.tab));
     if (ui.tab === "diary") setupGrids(view);
-    if (ui.tab === "progress") drawChart();
+    if (ui.tab === "progress" || ui.tab === "body") drawCharts();
   }
 
   let toastTimer;
@@ -397,8 +441,10 @@
       cells += `<div class="c fz n">${i + 1}</div>`;
       for (const [, ps] of past) cells += pastCellHTML(ps[i], paired);
       const s = sets[i];
+      const prev = past[1][1][i];
       if (s) {
-        cells += `<div class="c cur ro"><span class="wt">${weightHTML(s, paired)}</span><span class="rp">× ${s.reps}</span>${kindTag(s)}</div>`;
+        cells += `<div class="c cur ro"><span class="wt cmp-${compare(s, prev, "w")}">${weightHTML(s, paired)}</span>`
+          + `<span class="rp cmp-${compare(s, prev, "r")}">× ${s.reps}</span>${kindTag(s)}</div>`;
       } else {
         cells += `<div class="c cur ro empty">${i === 0 && !sets.length ? "Нажми, чтобы записать подходы" : "—"}</div>`;
       }
@@ -494,13 +540,11 @@
       const volume = w.sets.reduce((a, s) => a + Store.volume(s), 0);
       subtitle = `${wd} · ${exercises.length} ${plural(exercises.length, "упражнение", "упражнения", "упражнений")} · `
         + `${work} ${plural(work, "рабочий подход", "рабочих подхода", "рабочих подходов")} · ${fmt(volume)} кг`;
-      const tpl = w.template && Store.template(w.template);
       body = `
         <section class="card workout">
           <div class="wk-head">
             <div>
               <div class="wk-name">${esc(w.name || "Тренировка")}</div>
-              ${tpl ? `<div class="wk-sub">по шаблону «${esc(tpl.name)}»</div>` : ""}
             </div>
             <button class="link" data-act="edit-workout">Изменить</button>
           </div>
@@ -566,19 +610,28 @@
   function renderPickerList() {
     const p = ui.picker;
     const custom = customExercises();
-    const groups = [ALL, ...Object.keys(CATALOG), ...(custom.length ? [CUSTOM] : [])];
+    const groups = [ALL, ...GROUPS, ...(custom.some((e) => groupOf(e) === CUSTOM) ? [CUSTOM] : [])];
     if (!groups.includes(p.group)) p.group = ALL;
     $("#pick-groups").innerHTML = groups.map((g) =>
       `<button class="pill ${g === p.group ? "on" : ""}" data-act="pick-group" data-group="${esc(g)}">${esc(g)}</button>`).join("");
 
     const q = norm(p.q);
     const sections = Object.entries(CATALOG).map(([g, names]) => [g, names.map(norm)]);
+    // свои упражнения показываем в их группе, без группы — в «Мои»
     const extra = [...new Set([...custom, ...p.selected.filter((e) => !INDEX.has(e))])];
-    if (extra.length) sections.push([CUSTOM, extra]);
+    for (const section of sections) section[1].push(...extra.filter((e) => groupOf(e) === section[0]));
+    const ungrouped = extra.filter((e) => groupOf(e) === CUSTOM);
+    if (ungrouped.length) sections.push([CUSTOM, ungrouped]);
     let html = "";
     const known = new Set([...INDEX.keys(), ...extra]);
     if (q && !known.has(q)) {
-      html += `<div class="pick-list" style="margin:10px 0"><button class="pick-item add" data-act="pick-custom">+ Добавить «${esc(p.q.trim())}»</button></div>`;
+      html += `
+        <div class="card new-ex">
+          <b>Новое упражнение «${esc(p.q.trim())}»</b>
+          <small>Выбери группу мышц — упражнение появится в ней</small>
+          <div class="pills wrap">${[...GROUPS, "Без группы"].map((g) =>
+            `<button class="pill" data-act="pick-custom" data-group="${esc(g)}">${esc(g)}</button>`).join("")}</div>
+        </div>`;
     }
     for (const [g, list] of sections) {
       if (p.group !== ALL && p.group !== g) continue;
@@ -770,15 +823,16 @@
       for (const [, sets] of past) cells += pastCellHTML(sets[i], e.paired);
       const row = e.rows[i];
       if (row) {
+        const cmp = (f) => compare(rowSet(row), past[1][1][i], f);
         cells += `
           <div class="c cur">
             <select class="kind k-${row.k}" data-i="${i}" data-f="k" aria-label="Тип подхода">
               ${KINDS.map((k) => `<option value="${k}" ${row.k === k ? "selected" : ""}>${KIND_LABELS[k]}</option>`).join("")}
             </select>
             <label class="num"><span>кг${e.paired ? " (×2)" : ""}</span>
-              <input data-i="${i}" data-f="w" inputmode="decimal" value="${esc(row.w)}" placeholder="0"></label>
+              <input class="cmp-${cmp("w")}" data-i="${i}" data-f="w" inputmode="decimal" value="${esc(row.w)}" placeholder="0"></label>
             <label class="num"><span>повт.</span>
-              <input data-i="${i}" data-f="r" inputmode="numeric" pattern="[0-9]*" value="${esc(row.r)}" placeholder="0"></label>
+              <input class="cmp-${cmp("r")}" data-i="${i}" data-f="r" inputmode="numeric" pattern="[0-9]*" value="${esc(row.r)}" placeholder="0"></label>
             <button class="icon-btn" data-act="del-row" data-i="${i}" aria-label="Удалить подход">${ICONS.close}</button>
           </div>`;
       } else if (i === e.rows.length) {
@@ -796,6 +850,15 @@
       <div class="card grid-card">
         <div class="grid-scroll" id="grid-scroll"><div class="grid">${cells}</div></div>
       </div>
+      ${INDEX.has(e.ex) ? "" : `
+      <div class="card toggle-row">
+        <span><b>Группа мышц</b><small>Своё упражнение — можно отнести к любой группе</small></span>
+        <div class="select-wrap small-select">
+          <select id="ex-group">${[...GROUPS, CUSTOM].map((g) =>
+            `<option value="${esc(g)}" ${groupOf(e.ex) === g ? "selected" : ""}>${g === CUSTOM ? "Без группы" : esc(g)}</option>`).join("")}</select>
+          ${ICONS.chevron}
+        </div>
+      </div>`}
       <label class="card toggle-row">
         <span><b>Два снаряда</b><small>Вес одной гантели или стороны тренажёра, рядом пишется ×2</small></span>
         <input type="checkbox" id="paired" ${e.paired ? "checked" : ""}><i class="switch"></i>
@@ -807,6 +870,22 @@
       </div>`;
     const scroller = $("#grid-scroll");
     scroller.scrollLeft = scroller.scrollWidth;
+  }
+
+  /** Подход из строки редактора (для сравнения цветом); null, если повторы ещё не введены. */
+  function rowSet(row) {
+    const reps = Number(row.r.trim());
+    if (!row.r.trim() || !Number.isInteger(reps) || reps <= 0) return null;
+    return { weight: Number(row.w.trim().replace(",", ".")) || 0, reps };
+  }
+
+  function updateRowColors(i) {
+    const e = ui.editor;
+    const prev = e.past[1][1][i];
+    for (const f of ["w", "r"]) {
+      const input = $(`#editor input[data-i="${i}"][data-f="${f}"]`);
+      if (input) input.className = `cmp-${compare(rowSet(e.rows[i]), prev, f)}`;
+    }
   }
 
   function saveEditor() {
@@ -889,42 +968,113 @@
       </div>`;
   }
 
-  function drawChart() {
-    const box = $("#chart");
-    if (!box) return;
-    const data = Store.stats(ui.progressEx)?.history || [];
+  /** Линейный график по датам. rows = [[day, v1, v2, ...]], series = [[индекс значения, цвет], ...] */
+  function lineChart(box, rows, series) {
+    if (!box || !rows.length) return;
     const W = Math.max(box.clientWidth, 260), H = 220;
-    const L = 34, R = 12, T = 12, B = 26;
-    const values = data.flatMap(([, b, o]) => [b, o]);
+    const L = 38, R = 12, T = 12, B = 26;
+    const values = rows.flatMap((row) => series.map(([idx]) => row[idx]));
     let lo = Math.min(...values), hi = Math.max(...values);
-    const padV = Math.max((hi - lo) * 0.15, 2.5);
+    const padV = Math.max((hi - lo) * 0.15, 1);
     lo = Math.max(0, lo - padV); hi += padV;
-    const t0 = parse(data[0][0]).getTime();
-    const span = parse(data[data.length - 1][0]).getTime() - t0;
-    const x = (i) => L + (W - L - R) * (span ? (parse(data[i][0]).getTime() - t0) / span : 0.5);
+    const t0 = parse(rows[0][0]).getTime();
+    const span = parse(rows[rows.length - 1][0]).getTime() - t0;
+    const x = (i) => L + (W - L - R) * (span ? (parse(rows[i][0]).getTime() - t0) / span : 0.5);
     const y = (v) => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+    const tick = (v) => (hi - lo < 6 ? fmt(Math.round(v * 10) / 10) : Math.round(v));
 
     let svg = "";
     for (let k = 0; k <= 3; k++) {
       const v = lo + ((hi - lo) * k) / 3;
       svg += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>`
-        + `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${Math.round(v)}</text>`;
+        + `<text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" font-size="10" fill="var(--muted)">${tick(v)}</text>`;
     }
     let lastX = -1e9;
-    data.forEach(([d], i) => {
+    rows.forEach(([d], i) => {
       if (x(i) - lastX < 44) return;
       svg += `<text x="${x(i)}" y="${H - 6}" text-anchor="middle" font-size="10" fill="var(--muted)">${shortDate(d)}</text>`;
       lastX = x(i);
     });
-    for (const [idx, color] of [[1, "var(--trend)"], [2, "var(--accent)"]]) {
-      const pts = data.map((row, i) => `${x(i)},${y(row[idx])}`);
+    for (const [idx, color] of series) {
+      const pts = rows.map((row, i) => `${x(i)},${y(row[idx])}`);
       if (pts.length > 1) {
         svg += `<polyline points="${pts.join(" ")}" fill="none" stroke="${color}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
       }
-      svg += data.map((row, i) =>
-        `<circle cx="${x(i)}" cy="${y(row[idx])}" r="4" fill="${color}" stroke="var(--surface)" stroke-width="2"/>`).join("");
+      if (rows.length <= 60) {
+        svg += rows.map((row, i) =>
+          `<circle cx="${x(i)}" cy="${y(row[idx])}" r="4" fill="${color}" stroke="var(--surface)" stroke-width="2"/>`).join("");
+      }
     }
     box.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}">${svg}</svg>`;
+  }
+
+  function drawCharts() {
+    if (ui.tab === "progress") {
+      lineChart($("#chart"), Store.stats(ui.progressEx)?.history || [], [[1, "var(--trend)"], [2, "var(--accent)"]]);
+    } else if (ui.tab === "body") {
+      lineChart($("#bw-chart"), bodyRangeEntries(), [[1, "var(--accent)"]]);
+    }
+  }
+
+  // ---------- вес тела ----------
+
+  function bodyRangeEntries() {
+    const all = Store.bodyEntries();
+    if (!ui.bodyRange) return all;
+    const from = addDays(todayIso(), -ui.bodyRange);
+    return all.filter(([d]) => d >= from);
+  }
+
+  function signed(x) {
+    const v = Math.round(x * 10) / 10;
+    return v > 0 ? `+${fmt(v)}` : v < 0 ? `−${fmt(-v)}` : "0";
+  }
+
+  function bodyView() {
+    const all = Store.bodyEntries();
+    const today = todayIso();
+    const todayKg = (Store.data.body || {})[today];
+    const form = `
+      <div class="card bw-form">
+        <input id="bw-day" class="field" type="date" value="${today}" max="${today}" aria-label="Дата">
+        <input id="bw-kg" class="field" inputmode="decimal" placeholder="Вес, кг" value="${todayKg ? fmt(todayKg) : ""}" aria-label="Вес, кг">
+        <button class="btn" data-act="bw-save">Записать</button>
+      </div>`;
+    if (!all.length) {
+      return `<header class="page-head"><h1>Вес тела</h1><p class="muted">Записывай вес, чтобы видеть динамику</p></header>
+        <div class="stack">${form}<div class="card empty"><b>Замеров пока нет</b><span class="muted">Удобнее взвешиваться утром натощак</span></div></div>`;
+    }
+    const [lastDay, last] = all[all.length - 1];
+    const prev = all.length > 1 ? all[all.length - 2][1] : null;
+    const range = bodyRangeEntries();
+    const rangeChange = range.length > 1 ? range[range.length - 1][1] - range[0][1] : null;
+    const ranges = [[30, "Месяц"], [90, "3 месяца"], [365, "Год"], [0, "Всё"]];
+    const list = [...all].reverse().slice(0, 60).map(([d, kg], i, arr) => {
+      const before = arr[i + 1];
+      return `
+        <div class="list-row">
+          <div class="lr-text"><b>${fmt(kg)} кг</b><small>${longDate(d)} ${parse(d).getFullYear()}, ${weekday(d)}</small></div>
+          ${before ? `<span class="bw-delta">${signed(kg - before[1])}</span>` : ""}
+          <button class="icon-btn" data-act="bw-del" data-day="${d}" aria-label="Удалить">${ICONS.close}</button>
+        </div>`;
+    }).join("");
+    return `
+      <header class="page-head"><h1>Вес тела</h1></header>
+      <div class="stack">
+        <div class="card hero">
+          <div><div class="value">${fmt(last)} <small>кг</small></div>
+          <div class="label">${lastDay === today ? "сегодня" : longDate(lastDay)}${prev !== null ? ` · ${signed(last - prev)} кг к прошлому замеру` : ""}</div></div>
+        </div>
+        ${form}
+        <div class="pills" style="margin-top:4px">${ranges.map(([days, label]) =>
+          `<button class="pill ${ui.bodyRange === days ? "on" : ""}" data-act="bw-range" data-days="${days}">${label}</button>`).join("")}</div>
+        <div class="card chart">
+          ${rangeChange !== null ? `<div class="legend"><span class="muted">За период: <b style="color:var(--text)">${signed(rangeChange)} кг</b></span></div>` : ""}
+          <div id="bw-chart">${range.length ? "" : '<div class="empty muted">Нет замеров за этот период</div>'}</div>
+        </div>
+        <div class="section-title">Замеры</div>
+        <div class="list-card">${list}</div>
+      </div>`;
   }
 
   // ---------- ещё ----------
@@ -972,7 +1122,7 @@
       </div>
       <p class="muted small" style="margin:8px 4px 0">Данные хранятся только на этом устройстве. Время от времени сохраняй копию в «Файлы» или iCloud.</p>
       ${install}
-      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.4</p>`;
+      <p class="muted small" style="text-align:center;margin-top:28px">Fitlog · версия 1.5</p>`;
   }
 
   async function exportData() {
@@ -1044,8 +1194,9 @@
       el.classList.toggle("on", i < 0);
       updatePickDone();
     },
-    "pick-custom": () => {
+    "pick-custom": (el) => {
       const ex = norm(ui.picker.q);
+      if (ex && !INDEX.has(ex)) Store.setGroup(ex, el.dataset.group === "Без группы" ? CUSTOM : el.dataset.group);
       if (ex && !ui.picker.selected.includes(ex)) ui.picker.selected.push(ex);
       ui.picker.q = "";
       $("#pick-q").value = "";
@@ -1112,6 +1263,21 @@
       render();
     },
 
+    "bw-save": () => {
+      const day = $("#bw-day").value;
+      const kg = Number($("#bw-kg").value.trim().replace(",", "."));
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day > todayIso()) return toast("Проверь дату");
+      if (!(kg >= 20 && kg <= 400)) return toast("Введи вес в килограммах, например 82.5");
+      Store.setBody(day, Math.round(kg * 10) / 10);
+      render();
+      toast("Вес записан");
+    },
+    "bw-del": (el) => {
+      if (!confirm("Удалить этот замер?")) return;
+      Store.deleteBody(el.dataset.day);
+      render();
+    },
+    "bw-range": (el) => { ui.bodyRange = Number(el.dataset.days); render(); },
     "open-day": (el) => {
       ui.day = el.dataset.day;
       ui.cursor = ui.day;
@@ -1155,6 +1321,7 @@
       ui.list.name = t.value;
     } else if ((t.dataset.f === "w" || t.dataset.f === "r") && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)][t.dataset.f] = t.value;
+      updateRowColors(Number(t.dataset.i));
     }
   });
 
@@ -1168,6 +1335,14 @@
     } else if (t.dataset.f === "k" && ui.editor) {
       ui.editor.rows[Number(t.dataset.i)].k = t.value;
       t.className = `kind k-${t.value}`;
+    } else if (t.id === "ex-group" && ui.editor) {
+      Store.setGroup(ui.editor.ex, t.value);
+      const scroll = $("#grid-scroll").scrollLeft;
+      renderEditor();
+      $("#grid-scroll").scrollLeft = scroll;
+    } else if (t.id === "bw-day") {
+      const kg = (Store.data.body || {})[t.value];
+      $("#bw-kg").value = kg ? fmt(kg) : "";
     } else if (t.id === "apply-tpl" && ui.list) {
       ui.list.applyTpl = t.checked;
     } else if (t.id === "save-tpl" && ui.list) {
@@ -1185,13 +1360,14 @@
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     const t = event.target;
+    if (t.id === "bw-kg") return actions["bw-save"]();
     if (t.id === "pick-q" || t.id === "wk-name" || t.id === "list-name" || t.dataset.f) t.blur();
   });
 
   let resizeTimer;
   window.addEventListener("resize", () => {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(drawChart, 150);
+    resizeTimer = setTimeout(drawCharts, 150);
   });
 
   // при возвращении в приложение на следующий день — показать «сегодня»

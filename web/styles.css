@@ -10,6 +10,7 @@
   --accent-soft: #EEF0FF;
   --danger: #DC2626;
   --trend: #0D9488;
+  --up: #16A34A;
   --warm-fg: #B45309;
   --warm-bg: #FEF3C7;
   --fail-fg: #DC2626;
@@ -32,6 +33,7 @@
     --accent-soft: #25254D;
     --danger: #F87171;
     --trend: #2DD4BF;
+    --up: #4ADE80;
     --warm-fg: #FBBF24;
     --warm-bg: #352A10;
     --fail-fg: #F87171;
@@ -53,6 +55,7 @@
   --accent-soft: #25254D;
   --danger: #F87171;
   --trend: #2DD4BF;
+  --up: #4ADE80;
   --warm-fg: #FBBF24;
   --warm-bg: #352A10;
   --fail-fg: #F87171;
@@ -94,7 +97,7 @@ input, textarea, select {
 main {
   max-width: 640px;
   margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 18px) 16px calc(env(safe-area-inset-bottom) + 96px);
+  padding: calc(env(safe-area-inset-top) + 18px) 16px calc(env(safe-area-inset-bottom) + 80px);
 }
 
 h1 { font-size: 30px; line-height: 1.15; margin: 0; letter-spacing: -0.02em; }
@@ -239,14 +242,24 @@ h2 { font-size: 17px; margin: 0; }
   z-index: 10;
   display: flex;
   justify-content: space-around;
-  padding: 6px 8px calc(env(safe-area-inset-bottom) + 6px);
+  padding: 4px 4px max(calc(env(safe-area-inset-bottom) - 14px), 6px);
   background: var(--tabbar);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-top: 0.5px solid var(--line);
 }
+.tabbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 120px;
+  background: var(--tabbar);
+}
 .tabbar button {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -268,11 +281,13 @@ h2 { font-size: 17px; margin: 0; }
   background: var(--bg);
   display: flex;
   flex-direction: column;
-  transform: translateY(100%);
+  /* закрытая шторка уезжает за нижний край; visibility не используем — WebKit иногда
+     не пересчитывает её у вложенных элементов, и они перестают нажиматься */
+  transform: translateY(110%);
   transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
-  visibility: hidden;
+  pointer-events: none;
 }
-.sheet.open { transform: none; visibility: visible; }
+.sheet.open { transform: none; pointer-events: auto; }
 .sheet-head {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -662,3 +677,29 @@ h2 { font-size: 17px; margin: 0; }
 .lr-text b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lr-text small { font-size: 12px; color: var(--muted); }
 .icon-btn:disabled { opacity: 0.25; }
+
+/* ---------- сравнение с прошлой тренировкой ---------- */
+
+.cmp-up { color: var(--up) !important; }
+.cmp-same { color: var(--muted) !important; }
+.cmp-down { color: var(--danger) !important; }
+.cmp-up small, .cmp-same small, .cmp-down small { color: inherit; }
+
+/* ---------- новое своё упражнение ---------- */
+
+.new-ex { margin: 10px 0 4px; }
+.new-ex b { display: block; }
+.new-ex small { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
+.pills.wrap { flex-wrap: wrap; overflow: visible; margin: 10px 0 0; padding: 0; }
+.pills.wrap .pill { background: var(--field); }
+.small-select { flex: none; width: 150px; }
+.small-select select { height: 40px; background: var(--field); font-size: 14px; padding-left: 12px; }
+.small-select svg { top: 12px; }
+
+/* ---------- вес тела ---------- */
+
+.bw-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bw-form .field { background: var(--field); min-width: 0; }
+.bw-form input[type="date"] { -webkit-appearance: none; appearance: none; display: flex; align-items: center; }
+.bw-form .btn { grid-column: 1 / -1; min-height: 46px; }
+.bw-delta { font-size: 14px; font-weight: 600; color: var(--muted); margin-right: 4px; }
