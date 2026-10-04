@@ -1,6 +1,6 @@
 // Кэширует приложение, чтобы оно открывалось без интернета.
 // При выпуске новой версии увеличь номер в CACHE.
-const CACHE = "fitlog-v7";
+const CACHE = "fitlog-v8";
 const ASSETS = [
   "./",
   "./index.html",
